@@ -314,6 +314,14 @@ pub(crate) fn get_top_level_column_physical_name(
         .field(logical_name)
         .ok_or_else(|| Error::generic(format!("Column '{}' not found in schema", logical_name)))?;
 
+    if mode != ColumnMappingMode::None && !field.has_physical_name_annotation() {
+        return Err(Error::invalid_column_mapping_mode(format!(
+            "Column mapping is enabled but field '{}' lacks the {} annotation",
+            logical_name,
+            ColumnMetadataKey::ColumnMappingPhysicalName.as_ref()
+        )));
+    }
+
     Ok(field.physical_name(mode).to_string())
 }
 
@@ -977,6 +985,42 @@ mod tests {
         assert!(
             err_msg.contains("not found in schema"),
             "Expected 'not found in schema' error, got: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_get_top_level_column_physical_name_missing_annotation_name_mode() {
+        use crate::schema::DataType;
+
+        // Field exists but has no physical name annotation despite Name mode being active
+        let schema = StructType::new_unchecked([StructField::new("a", DataType::INTEGER, false)]);
+
+        let result = get_top_level_column_physical_name("a", &schema, ColumnMappingMode::Name);
+
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("delta.columnMapping.physicalName"),
+            "Expected missing annotation error, got: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_get_top_level_column_physical_name_missing_annotation_id_mode() {
+        use crate::schema::DataType;
+
+        // Same check for Id mode — the annotation is equally required
+        let schema = StructType::new_unchecked([StructField::new("a", DataType::INTEGER, false)]);
+
+        let result = get_top_level_column_physical_name("a", &schema, ColumnMappingMode::Id);
+
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("delta.columnMapping.physicalName"),
+            "Expected missing annotation error, got: {}",
             err_msg
         );
     }
