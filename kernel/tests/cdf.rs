@@ -1,6 +1,9 @@
 use std::error;
+use std::sync::Arc;
 
-use delta_kernel::arrow::array::RecordBatch;
+use delta_kernel::arrow::array::{
+    Date32Array, Float64Array, Int16Array, Int32Array, RecordBatch,
+};
 use delta_kernel::arrow::datatypes::Schema as ArrowSchema;
 use delta_kernel::engine::arrow_data::EngineDataArrowExt as _;
 use itertools::Itertools;
@@ -11,7 +14,7 @@ use delta_kernel::{DeltaResult, Error, PredicateRef, Version};
 
 mod common;
 
-use test_utils::load_test_data;
+use test_utils::{assert_batches_eq, generate_batch, load_test_data, IntoArray};
 
 fn read_cdf_for_table(
     test_name: impl AsRef<str>,
@@ -69,326 +72,464 @@ fn cdf_with_deletion_vector() -> Result<(), Box<dyn error::Error>> {
     // 4. Restore [1, 4]
     // 5. Restore [0, 5] and Remove [3]
     // 6. Restore 3
-    let mut expected = vec![
-        "+-------+--------------+-----------------+",
-        "| value | _change_type | _commit_version |",
-        "+-------+--------------+-----------------+",
-        "| 0     | insert       | 0               |",
-        "| 1     | insert       | 0               |",
-        "| 2     | insert       | 0               |",
-        "| 3     | insert       | 0               |",
-        "| 4     | insert       | 0               |",
-        "| 5     | insert       | 0               |",
-        "| 6     | insert       | 0               |",
-        "| 7     | insert       | 0               |",
-        "| 8     | insert       | 0               |",
-        "| 9     | insert       | 0               |",
-        "| 0     | delete       | 1               |",
-        "| 9     | delete       | 1               |",
-        "| 0     | insert       | 2               |",
-        "| 9     | insert       | 2               |",
-        "| 0     | delete       | 3               |",
-        "| 1     | delete       | 3               |",
-        "| 4     | delete       | 3               |",
-        "| 5     | delete       | 3               |",
-        "| 1     | insert       | 4               |",
-        "| 4     | insert       | 4               |",
-        "| 3     | delete       | 5               |",
-        "| 0     | insert       | 5               |",
-        "| 5     | insert       | 5               |",
-        "| 3     | insert       | 6               |",
-        "+-------+--------------+-----------------+",
-    ];
-    sort_lines!(expected);
-    assert_batches_sorted_eq!(expected, &batches);
+    let expected = generate_batch(vec![
+        (
+            "value",
+            vec![
+                0i32, 1, 2, 3, 4, 5, 6, 7, 8, 9, // insert v0
+                0, 9, // delete v1
+                0, 9, // insert v2
+                0, 1, 4, 5, // delete v3
+                1, 4, // insert v4
+                3, 0, 5, // delete+insert v5
+                3, // insert v6
+            ]
+            .into_array(),
+        ),
+        (
+            "_change_type",
+            vec![
+                "insert", "insert", "insert", "insert", "insert", "insert", "insert", "insert",
+                "insert", "insert", // v0
+                "delete", "delete", // v1
+                "insert", "insert", // v2
+                "delete", "delete", "delete", "delete", // v3
+                "insert", "insert", // v4
+                "delete", "insert", "insert", // v5
+                "insert", // v6
+            ]
+            .into_array(),
+        ),
+        (
+            "_commit_version",
+            vec![
+                0i64, 0, 0, 0, 0, 0, 0, 0, 0, 0, // v0
+                1, 1, // v1
+                2, 2, // v2
+                3, 3, 3, 3, // v3
+                4, 4, // v4
+                5, 5, 5, // v5
+                6, // v6
+            ]
+            .into_array(),
+        ),
+    ])?;
+    assert_batches_eq(&expected, &batches);
     Ok(())
 }
 
 #[test]
 fn basic_cdf() -> Result<(), Box<dyn error::Error>> {
     let batches = read_cdf_for_table("cdf-table", 0, None, None)?;
-    let mut expected = vec![
-        "+----+--------+------------+------------------+-----------------+",
-        "| id | name   | birthday   | _change_type     | _commit_version |",
-        "+----+--------+------------+------------------+-----------------+",
-        "| 1  | Steve  | 2023-12-22 | insert           | 0               |",
-        "| 2  | Bob    | 2023-12-23 | insert           | 0               |",
-        "| 3  | Dave   | 2023-12-23 | insert           | 0               |",
-        "| 4  | Kate   | 2023-12-23 | insert           | 0               |",
-        "| 5  | Emily  | 2023-12-24 | insert           | 0               |",
-        "| 6  | Carl   | 2023-12-24 | insert           | 0               |",
-        "| 7  | Dennis | 2023-12-24 | insert           | 0               |",
-        "| 8  | Claire | 2023-12-25 | insert           | 0               |",
-        "| 9  | Ada    | 2023-12-25 | insert           | 0               |",
-        "| 10 | Borb   | 2023-12-25 | insert           | 0               |",
-        "| 3  | Dave   | 2023-12-22 | update_postimage | 1               |",
-        "| 3  | Dave   | 2023-12-23 | update_preimage  | 1               |",
-        "| 4  | Kate   | 2023-12-22 | update_postimage | 1               |",
-        "| 4  | Kate   | 2023-12-23 | update_preimage  | 1               |",
-        "| 2  | Bob    | 2023-12-22 | update_postimage | 1               |",
-        "| 2  | Bob    | 2023-12-23 | update_preimage  | 1               |",
-        "| 7  | Dennis | 2023-12-24 | update_preimage  | 2               |",
-        "| 7  | Dennis | 2023-12-29 | update_postimage | 2               |",
-        "| 5  | Emily  | 2023-12-24 | update_preimage  | 2               |",
-        "| 5  | Emily  | 2023-12-29 | update_postimage | 2               |",
-        "| 6  | Carl   | 2023-12-24 | update_preimage  | 2               |",
-        "| 6  | Carl   | 2023-12-29 | update_postimage | 2               |",
-        "| 7  | Dennis | 2023-12-29 | delete           | 3               |",
-        "+----+--------+------------+------------------+-----------------+",
+
+    // Determine the actual birthday column type from the scan results
+    let birthday_dates: Vec<Option<i32>> = vec![
+        Some(19713), // 2023-12-22
+        Some(19714), // 2023-12-23
+        Some(19714), // 2023-12-23
+        Some(19714), // 2023-12-23
+        Some(19715), // 2023-12-24
+        Some(19715), // 2023-12-24
+        Some(19715), // 2023-12-24
+        Some(19716), // 2023-12-25
+        Some(19716), // 2023-12-25
+        Some(19716), // 2023-12-25
+        Some(19713), // 2023-12-22
+        Some(19714), // 2023-12-23
+        Some(19713), // 2023-12-22
+        Some(19714), // 2023-12-23
+        Some(19713), // 2023-12-22
+        Some(19714), // 2023-12-23
+        Some(19715), // 2023-12-24
+        Some(19720), // 2023-12-29
+        Some(19715), // 2023-12-24
+        Some(19720), // 2023-12-29
+        Some(19715), // 2023-12-24
+        Some(19720), // 2023-12-29
+        Some(19720), // 2023-12-29
     ];
-    sort_lines!(expected);
-    assert_batches_sorted_eq!(expected, &batches);
+
+    let expected = RecordBatch::try_new(
+        Arc::new(ArrowSchema::new(vec![
+            delta_kernel::arrow::datatypes::Field::new("id", delta_kernel::arrow::datatypes::DataType::Int32, true),
+            delta_kernel::arrow::datatypes::Field::new("name", delta_kernel::arrow::datatypes::DataType::Utf8, true),
+            delta_kernel::arrow::datatypes::Field::new("birthday", delta_kernel::arrow::datatypes::DataType::Date32, true),
+            delta_kernel::arrow::datatypes::Field::new("_change_type", delta_kernel::arrow::datatypes::DataType::Utf8, true),
+            delta_kernel::arrow::datatypes::Field::new("_commit_version", delta_kernel::arrow::datatypes::DataType::Int64, true),
+        ])),
+        vec![
+            Arc::new(Int32Array::from(vec![
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, // v0
+                3, 3, 4, 4, 2, 2, // v1
+                7, 7, 5, 5, 6, 6, // v2
+                7, // v3
+            ])) as Arc<dyn delta_kernel::arrow::array::Array>,
+            Arc::new(delta_kernel::arrow::array::StringArray::from(vec![
+                "Steve", "Bob", "Dave", "Kate", "Emily", "Carl", "Dennis", "Claire", "Ada", "Borb",
+                "Dave", "Dave", "Kate", "Kate", "Bob", "Bob",
+                "Dennis", "Dennis", "Emily", "Emily", "Carl", "Carl",
+                "Dennis",
+            ])) as Arc<dyn delta_kernel::arrow::array::Array>,
+            Arc::new(Date32Array::from(birthday_dates)) as Arc<dyn delta_kernel::arrow::array::Array>,
+            Arc::new(delta_kernel::arrow::array::StringArray::from(vec![
+                "insert", "insert", "insert", "insert", "insert", "insert", "insert", "insert", "insert", "insert",
+                "update_postimage", "update_preimage", "update_postimage", "update_preimage", "update_postimage", "update_preimage",
+                "update_preimage", "update_postimage", "update_preimage", "update_postimage", "update_preimage", "update_postimage",
+                "delete",
+            ])) as Arc<dyn delta_kernel::arrow::array::Array>,
+            Arc::new(delta_kernel::arrow::array::Int64Array::from(vec![
+                0i64, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                1, 1, 1, 1, 1, 1,
+                2, 2, 2, 2, 2, 2,
+                3,
+            ])) as Arc<dyn delta_kernel::arrow::array::Array>,
+        ],
+    )?;
+    assert_batches_eq(&expected, &batches);
     Ok(())
 }
 
 #[test]
 fn cdf_non_partitioned() -> Result<(), Box<dyn error::Error>> {
     let batches = read_cdf_for_table("cdf-table-non-partitioned", 0, None, None)?;
-    let mut expected = vec![
-             "+----+--------+------------+-------------------+---------------+--------------+----------------+------------------+-----------------+",
-             "| id | name   | birthday   | long_field        | boolean_field | double_field | smallint_field | _change_type     | _commit_version |",
-             "+----+--------+------------+-------------------+---------------+--------------+----------------+------------------+-----------------+",
-             "| 1  | Steve  | 2024-04-14 | 1                 | true          | 3.14         | 1              | insert           | 0               |",
-             "| 2  | Bob    | 2024-04-15 | 1                 | true          | 3.14         | 1              | insert           | 0               |",
-             "| 3  | Dave   | 2024-04-15 | 2                 | true          | 3.14         | 1              | insert           | 0               |",
-             "| 4  | Kate   | 2024-04-15 | 3                 | true          | 3.14         | 1              | insert           | 0               |",
-             "| 5  | Emily  | 2024-04-16 | 4                 | true          | 3.14         | 1              | insert           | 0               |",
-             "| 6  | Carl   | 2024-04-16 | 5                 | true          | 3.14         | 1              | insert           | 0               |",
-             "| 7  | Dennis | 2024-04-16 | 6                 | true          | 3.14         | 1              | insert           | 0               |",
-             "| 8  | Claire | 2024-04-17 | 7                 | true          | 3.14         | 1              | insert           | 0               |",
-             "| 9  | Ada    | 2024-04-17 | 8                 | true          | 3.14         | 1              | insert           | 0               |",
-             "| 10 | Borb   | 2024-04-17 | 99999999999999999 | true          | 3.14         | 1              | insert           | 0               |",
-             "| 3  | Dave   | 2024-04-15 | 2                 | true          | 3.14         | 1              | update_preimage  | 1               |",
-             "| 3  | Dave   | 2024-04-14 | 2                 | true          | 3.14         | 1              | update_postimage | 1               |",
-             "| 4  | Kate   | 2024-04-15 | 3                 | true          | 3.14         | 1              | update_preimage  | 1               |",
-             "| 4  | Kate   | 2024-04-14 | 3                 | true          | 3.14         | 1              | update_postimage | 1               |",
-             "| 2  | Bob    | 2024-04-15 | 1                 | true          | 3.14         | 1              | update_preimage  | 1               |",
-             "| 2  | Bob    | 2024-04-14 | 1                 | true          | 3.14         | 1              | update_postimage | 1               |",
-             "| 7  | Dennis | 2024-04-16 | 6                 | true          | 3.14         | 1              | update_preimage  | 2               |",
-             "| 7  | Dennis | 2024-04-14 | 6                 | true          | 3.14         | 1              | update_postimage | 2               |",
-             "| 5  | Emily  | 2024-04-16 | 4                 | true          | 3.14         | 1              | update_preimage  | 2               |",
-             "| 5  | Emily  | 2024-04-14 | 4                 | true          | 3.14         | 1              | update_postimage | 2               |",
-             "| 6  | Carl   | 2024-04-16 | 5                 | true          | 3.14         | 1              | update_preimage  | 2               |",
-             "| 6  | Carl   | 2024-04-14 | 5                 | true          | 3.14         | 1              | update_postimage | 2               |",
-             "| 7  | Dennis | 2024-04-14 | 6                 | true          | 3.14         | 1              | delete           | 3               |",
-             "| 1  | Alex   | 2024-04-14 | 1                 | true          | 3.14         | 1              | insert           | 4               |",
-             "| 2  | Alan   | 2024-04-15 | 1                 | true          | 3.14         | 1              | insert           | 4               |",
-             "+----+--------+------------+-------------------+---------------+--------------+----------------+------------------+-----------------+"
+
+    let birthday_dates: Vec<Option<i32>> = vec![
+        Some(19827), // 2024-04-14
+        Some(19828), // 2024-04-15
+        Some(19828), // 2024-04-15
+        Some(19828), // 2024-04-15
+        Some(19829), // 2024-04-16
+        Some(19829), // 2024-04-16
+        Some(19829), // 2024-04-16
+        Some(19830), // 2024-04-17
+        Some(19830), // 2024-04-17
+        Some(19830), // 2024-04-17
+        Some(19828), // 2024-04-15
+        Some(19827), // 2024-04-14
+        Some(19828), // 2024-04-15
+        Some(19827), // 2024-04-14
+        Some(19828), // 2024-04-15
+        Some(19827), // 2024-04-14
+        Some(19829), // 2024-04-16
+        Some(19827), // 2024-04-14
+        Some(19829), // 2024-04-16
+        Some(19827), // 2024-04-14
+        Some(19829), // 2024-04-16
+        Some(19827), // 2024-04-14
+        Some(19827), // 2024-04-14
+        Some(19827), // 2024-04-14
+        Some(19828), // 2024-04-15
     ];
-    sort_lines!(expected);
-    assert_batches_sorted_eq!(expected, &batches);
+
+    let expected = RecordBatch::try_new(
+        Arc::new(ArrowSchema::new(vec![
+            delta_kernel::arrow::datatypes::Field::new("id", delta_kernel::arrow::datatypes::DataType::Int32, true),
+            delta_kernel::arrow::datatypes::Field::new("name", delta_kernel::arrow::datatypes::DataType::Utf8, true),
+            delta_kernel::arrow::datatypes::Field::new("birthday", delta_kernel::arrow::datatypes::DataType::Date32, true),
+            delta_kernel::arrow::datatypes::Field::new("long_field", delta_kernel::arrow::datatypes::DataType::Int64, true),
+            delta_kernel::arrow::datatypes::Field::new("boolean_field", delta_kernel::arrow::datatypes::DataType::Boolean, true),
+            delta_kernel::arrow::datatypes::Field::new("double_field", delta_kernel::arrow::datatypes::DataType::Float64, true),
+            delta_kernel::arrow::datatypes::Field::new("smallint_field", delta_kernel::arrow::datatypes::DataType::Int16, true),
+            delta_kernel::arrow::datatypes::Field::new("_change_type", delta_kernel::arrow::datatypes::DataType::Utf8, true),
+            delta_kernel::arrow::datatypes::Field::new("_commit_version", delta_kernel::arrow::datatypes::DataType::Int64, true),
+        ])),
+        vec![
+            Arc::new(Int32Array::from(vec![
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+                3, 3, 4, 4, 2, 2,
+                7, 7, 5, 5, 6, 6,
+                7,
+                1, 2,
+            ])),
+            Arc::new(delta_kernel::arrow::array::StringArray::from(vec![
+                "Steve", "Bob", "Dave", "Kate", "Emily", "Carl", "Dennis", "Claire", "Ada", "Borb",
+                "Dave", "Dave", "Kate", "Kate", "Bob", "Bob",
+                "Dennis", "Dennis", "Emily", "Emily", "Carl", "Carl",
+                "Dennis",
+                "Alex", "Alan",
+            ])),
+            Arc::new(Date32Array::from(birthday_dates)),
+            Arc::new(delta_kernel::arrow::array::Int64Array::from(vec![
+                1i64, 1, 2, 3, 4, 5, 6, 7, 8, 99999999999999999,
+                2, 2, 3, 3, 1, 1,
+                6, 6, 4, 4, 5, 5,
+                6,
+                1, 1,
+            ])),
+            Arc::new(delta_kernel::arrow::array::BooleanArray::from(vec![
+                true, true, true, true, true, true, true, true, true, true,
+                true, true, true, true, true, true,
+                true, true, true, true, true, true,
+                true,
+                true, true,
+            ])),
+            Arc::new(Float64Array::from(vec![
+                3.14, 3.14, 3.14, 3.14, 3.14, 3.14, 3.14, 3.14, 3.14, 3.14,
+                3.14, 3.14, 3.14, 3.14, 3.14, 3.14,
+                3.14, 3.14, 3.14, 3.14, 3.14, 3.14,
+                3.14,
+                3.14, 3.14,
+            ])),
+            Arc::new(Int16Array::from(vec![
+                1i16, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+                1, 1, 1, 1, 1, 1,
+                1, 1, 1, 1, 1, 1,
+                1,
+                1, 1,
+            ])),
+            Arc::new(delta_kernel::arrow::array::StringArray::from(vec![
+                "insert", "insert", "insert", "insert", "insert", "insert", "insert", "insert", "insert", "insert",
+                "update_preimage", "update_postimage", "update_preimage", "update_postimage", "update_preimage", "update_postimage",
+                "update_preimage", "update_postimage", "update_preimage", "update_postimage", "update_preimage", "update_postimage",
+                "delete",
+                "insert", "insert",
+            ])),
+            Arc::new(delta_kernel::arrow::array::Int64Array::from(vec![
+                0i64, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                1, 1, 1, 1, 1, 1,
+                2, 2, 2, 2, 2, 2,
+                3,
+                4, 4,
+            ])),
+        ],
+    )?;
+    assert_batches_eq(&expected, &batches);
     Ok(())
 }
 
 #[test]
 fn cdf_with_cdc_and_dvs() -> Result<(), Box<dyn error::Error>> {
     let batches = read_cdf_for_table("cdf-table-with-cdc-and-dvs", 0, None, None)?;
-    let mut expected = vec![
-        "+----+--------------------+------------------+-----------------+",
-        "| id | comment            | _change_type     | _commit_version |",
-        "+----+--------------------+------------------+-----------------+",
-        "| 1  | initial            | insert           | 0               |",
-        "| 2  | insert1            | insert           | 1               |",
-        "| 3  | insert1-delete1    | insert           | 1               |",
-        "| 4  | insert1-delete2    | insert           | 1               |",
-        "| 5  | insert1-delete2    | insert           | 1               |",
-        "| 3  | insert1-delete1    | delete           | 2               |",
-        "| 3  | insert1-delete1    | insert           | 4               |",
-        "| 4  | insert1-delete2    | delete           | 5               |",
-        "| 5  | insert1-delete2    | delete           | 5               |",
-        "| 4  | insert1-delete2    | insert           | 7               |",
-        "| 5  | insert2            | insert           | 8               |",
-        "| 1  | initial            | update_preimage  | 9               |",
-        "| 1  | update1            | update_postimage | 9               |",
-        "| 2  | insert1            | update_preimage  | 9               |",
-        "| 2  | update1            | update_postimage | 9               |",
-        "| 3  | insert1-delete1    | update_preimage  | 9               |",
-        "| 3  | update1            | update_postimage | 9               |",
-        "| 1  | update1            | delete           | 10              |",
-        "| 2  | update1            | update_preimage  | 12              |",
-        "| 2  | update2            | update_postimage | 12              |",
-        "| 6  | insert3            | insert           | 14              |",
-        "| 7  | insert3            | insert           | 14              |",
-        "| 8  | insert4            | insert           | 15              |",
-        "| 9  | insert4            | insert           | 15              |",
-        "| 8  | insert4            | delete           | 16              |",
-        "| 7  | insert3            | delete           | 16              |",
-        "| 10 | merge1-insert      | insert           | 18              |",
-        "| 11 | merge1-insert      | insert           | 18              |",
-        "| 9  | merge1-update      | update_postimage | 18              |",
-        "| 9  | insert4            | update_preimage  | 18              |",
-        "| 11 | merge1-insert      | update_preimage  | 20              |",
-        "| 11 |                    | update_postimage | 20              |",
-        "| 12 | merge2-insert      | insert           | 22              |",
-        "| 11 |                    | delete           | 22              |",
-        "| 3  | update1            | delete           | 24              |",
-        "| 4  | insert1-delete2    | delete           | 24              |",
-        "| 5  | insert2            | delete           | 24              |",
-        "| 2  | update2            | delete           | 24              |",
-        "| 6  | insert3            | delete           | 24              |",
-        "| 9  | merge1-update      | delete           | 24              |",
-        "| 0  | new                | insert           | 25              |",
-        "| 1  | after-large-delete | insert           | 25              |",
-        "| 2  |                    | insert           | 25              |",
-        "+----+--------------------+------------------+-----------------+",
-    ];
-    sort_lines!(expected);
-    assert_batches_sorted_eq!(expected, &batches);
+    let expected = generate_batch(vec![
+        (
+            "id",
+            vec![
+                1i32, 2, 3, 4, 5, 3, 3, 4, 5, 4, 5,
+                1, 1, 2, 2, 3, 3,
+                1, 2, 2,
+                6, 7, 8, 9, 8, 7,
+                10, 11, 9, 9,
+                11, 11,
+                12, 11,
+                3, 4, 5, 2, 6, 9,
+                0, 1, 2,
+            ]
+            .into_array(),
+        ),
+        (
+            "comment",
+            vec![
+                "initial",
+                "insert1",
+                "insert1-delete1",
+                "insert1-delete2",
+                "insert1-delete2",
+                "insert1-delete1",
+                "insert1-delete1",
+                "insert1-delete2",
+                "insert1-delete2",
+                "insert1-delete2",
+                "insert2",
+                "initial",
+                "update1",
+                "insert1",
+                "update1",
+                "insert1-delete1",
+                "update1",
+                "update1",
+                "update1",
+                "update2",
+                "insert3",
+                "insert3",
+                "insert4",
+                "insert4",
+                "insert4",
+                "insert3",
+                "merge1-insert",
+                "merge1-insert",
+                "merge1-update",
+                "insert4",
+                "merge1-insert",
+                "",
+                "merge2-insert",
+                "",
+                "update1",
+                "insert1-delete2",
+                "insert2",
+                "update2",
+                "insert3",
+                "merge1-update",
+                "new",
+                "after-large-delete",
+                "",
+            ]
+            .into_array(),
+        ),
+        (
+            "_change_type",
+            vec![
+                "insert",           // v0
+                "insert",           // v1
+                "insert",           // v1
+                "insert",           // v1
+                "insert",           // v1
+                "delete",           // v2
+                "insert",           // v4
+                "delete",           // v5
+                "delete",           // v5
+                "insert",           // v7
+                "insert",           // v8
+                "update_preimage",  // v9
+                "update_postimage", // v9
+                "update_preimage",  // v9
+                "update_postimage", // v9
+                "update_preimage",  // v9
+                "update_postimage", // v9
+                "delete",           // v10
+                "update_preimage",  // v12
+                "update_postimage", // v12
+                "insert",           // v14
+                "insert",           // v14
+                "insert",           // v15
+                "insert",           // v15
+                "delete",           // v16
+                "delete",           // v16
+                "insert",           // v18
+                "insert",           // v18
+                "update_postimage", // v18
+                "update_preimage",  // v18
+                "update_preimage",  // v20
+                "update_postimage", // v20
+                "insert",           // v22
+                "delete",           // v22
+                "delete",           // v24
+                "delete",           // v24
+                "delete",           // v24
+                "delete",           // v24
+                "delete",           // v24
+                "delete",           // v24
+                "insert",           // v25
+                "insert",           // v25
+                "insert",           // v25
+            ]
+            .into_array(),
+        ),
+        (
+            "_commit_version",
+            vec![
+                0i64, 1, 1, 1, 1, 2, 4, 5, 5, 7, 8, 9, 9, 9, 9, 9, 9, 10, 12, 12, 14, 14, 15,
+                15, 16, 16, 18, 18, 18, 18, 20, 20, 22, 22, 24, 24, 24, 24, 24, 24, 25, 25, 25,
+            ]
+            .into_array(),
+        ),
+    ])?;
+    assert_batches_eq(&expected, &batches);
     Ok(())
+}
+
+/// Helper to build expected data for simple id(Int64) + _change_type + _commit_version tables
+fn simple_cdf_batch_i64(
+    ids: Vec<i64>,
+    change_types: Vec<&'static str>,
+    versions: Vec<i64>,
+) -> RecordBatch {
+    generate_batch(vec![
+        ("id", ids.into_array()),
+        ("_change_type", change_types.into_array()),
+        ("_commit_version", versions.into_array()),
+    ])
+    .unwrap()
+}
+
+/// Helper to build expected data for simple id(Int32) + _change_type + _commit_version tables
+fn simple_cdf_batch(
+    ids: Vec<i32>,
+    change_types: Vec<&'static str>,
+    versions: Vec<i64>,
+) -> RecordBatch {
+    generate_batch(vec![
+        ("id", ids.into_array()),
+        ("_change_type", change_types.into_array()),
+        ("_commit_version", versions.into_array()),
+    ])
+    .unwrap()
 }
 
 #[test]
 fn simple_cdf_version_ranges() -> DeltaResult<()> {
     let batches = read_cdf_for_table("cdf-table-simple", 0, 0, None)?;
-    let mut expected = vec![
-        "+----+--------------+-----------------+",
-        "| id | _change_type | _commit_version |",
-        "+----+--------------+-----------------+",
-        "| 0  | insert       | 0               |",
-        "| 1  | insert       | 0               |",
-        "| 2  | insert       | 0               |",
-        "| 3  | insert       | 0               |",
-        "| 4  | insert       | 0               |",
-        "| 5  | insert       | 0               |",
-        "| 6  | insert       | 0               |",
-        "| 7  | insert       | 0               |",
-        "| 8  | insert       | 0               |",
-        "| 9  | insert       | 0               |",
-        "+----+--------------+-----------------+",
-    ];
-    sort_lines!(expected);
-    assert_batches_sorted_eq!(expected, &batches);
+    let expected = simple_cdf_batch_i64(
+        (0..10).collect(),
+        vec!["insert"; 10],
+        vec![0; 10],
+    );
+    assert_batches_eq(&expected, &batches);
 
     let batches = read_cdf_for_table("cdf-table-simple", 1, 1, None)?;
-    let mut expected = vec![
-        "+----+--------------+-----------------+",
-        "| id | _change_type | _commit_version |",
-        "+----+--------------+-----------------+",
-        "| 0  | delete       | 1               |",
-        "| 1  | delete       | 1               |",
-        "| 2  | delete       | 1               |",
-        "| 3  | delete       | 1               |",
-        "| 4  | delete       | 1               |",
-        "| 5  | delete       | 1               |",
-        "| 6  | delete       | 1               |",
-        "| 7  | delete       | 1               |",
-        "| 8  | delete       | 1               |",
-        "| 9  | delete       | 1               |",
-        "+----+--------------+-----------------+",
-    ];
-    sort_lines!(expected);
-    assert_batches_sorted_eq!(expected, &batches);
+    let expected = simple_cdf_batch_i64(
+        (0..10).collect(),
+        vec!["delete"; 10],
+        vec![1; 10],
+    );
+    assert_batches_eq(&expected, &batches);
 
     let batches = read_cdf_for_table("cdf-table-simple", 2, 2, None)?;
-    let mut expected = vec![
-        "+----+--------------+-----------------+",
-        "| id | _change_type | _commit_version |",
-        "+----+--------------+-----------------+",
-        "| 20 | insert       | 2               |",
-        "| 21 | insert       | 2               |",
-        "| 22 | insert       | 2               |",
-        "| 23 | insert       | 2               |",
-        "| 24 | insert       | 2               |",
-        "+----+--------------+-----------------+",
-    ];
-    sort_lines!(expected);
-    assert_batches_sorted_eq!(expected, &batches);
+    let expected = simple_cdf_batch_i64(
+        (20..25).collect(),
+        vec!["insert"; 5],
+        vec![2; 5],
+    );
+    assert_batches_eq(&expected, &batches);
 
     let batches = read_cdf_for_table("cdf-table-simple", 0, 2, None)?;
-    let mut expected = vec![
-        "+----+--------------+-----------------+",
-        "| id | _change_type | _commit_version |",
-        "+----+--------------+-----------------+",
-        "| 0  | insert       | 0               |",
-        "| 1  | insert       | 0               |",
-        "| 2  | insert       | 0               |",
-        "| 3  | insert       | 0               |",
-        "| 4  | insert       | 0               |",
-        "| 5  | insert       | 0               |",
-        "| 6  | insert       | 0               |",
-        "| 7  | insert       | 0               |",
-        "| 8  | insert       | 0               |",
-        "| 9  | insert       | 0               |",
-        "| 0  | delete       | 1               |",
-        "| 1  | delete       | 1               |",
-        "| 2  | delete       | 1               |",
-        "| 3  | delete       | 1               |",
-        "| 4  | delete       | 1               |",
-        "| 5  | delete       | 1               |",
-        "| 6  | delete       | 1               |",
-        "| 7  | delete       | 1               |",
-        "| 8  | delete       | 1               |",
-        "| 9  | delete       | 1               |",
-        "| 20 | insert       | 2               |",
-        "| 21 | insert       | 2               |",
-        "| 22 | insert       | 2               |",
-        "| 23 | insert       | 2               |",
-        "| 24 | insert       | 2               |",
-        "+----+--------------+-----------------+",
-    ];
-    sort_lines!(expected);
-    assert_batches_sorted_eq!(expected, &batches);
+    let mut ids: Vec<i64> = (0..10).collect();
+    ids.extend(0..10);
+    ids.extend(20..25);
+    let mut change_types: Vec<&str> = vec!["insert"; 10];
+    change_types.extend(vec!["delete"; 10]);
+    change_types.extend(vec!["insert"; 5]);
+    let mut versions: Vec<i64> = vec![0; 10];
+    versions.extend(vec![1; 10]);
+    versions.extend(vec![2; 5]);
+    let expected = simple_cdf_batch_i64(ids, change_types, versions);
+    assert_batches_eq(&expected, &batches);
     Ok(())
 }
 
 #[test]
 fn update_operations() -> DeltaResult<()> {
     let batches = read_cdf_for_table("cdf-table-update-ops", 0, 2, None)?;
-    // Note: `update_pre` and `update_post` are technically not part of the delta spec, and instead
-    // should be `update_preimage` and `update_postimage` respectively. However, the tests in
-    // delta-spark use the post and pre.
-    let mut expected = vec![
-        "+----+--------------+-----------------+",
-        "| id | _change_type | _commit_version |",
-        "+----+--------------+-----------------+",
-        "| 0  | insert       | 0               |",
-        "| 1  | insert       | 0               |",
-        "| 2  | insert       | 0               |",
-        "| 3  | insert       | 0               |",
-        "| 4  | insert       | 0               |",
-        "| 5  | insert       | 0               |",
-        "| 6  | insert       | 0               |",
-        "| 7  | insert       | 0               |",
-        "| 8  | insert       | 0               |",
-        "| 9  | insert       | 0               |",
-        "| 20 | update_pre   | 1               |",
-        "| 21 | update_pre   | 1               |",
-        "| 22 | update_pre   | 1               |",
-        "| 23 | update_pre   | 1               |",
-        "| 24 | update_pre   | 1               |",
-        "| 30 | update_post  | 2               |",
-        "| 31 | update_post  | 2               |",
-        "| 32 | update_post  | 2               |",
-        "| 33 | update_post  | 2               |",
-        "| 34 | update_post  | 2               |",
-        "+----+--------------+-----------------+",
-    ];
-    sort_lines!(expected);
-    assert_batches_sorted_eq!(expected, &batches);
+    let expected = simple_cdf_batch_i64(
+        vec![
+            0, 1, 2, 3, 4, 5, 6, 7, 8, 9, // insert v0
+            20, 21, 22, 23, 24, // update_pre v1
+            30, 31, 32, 33, 34, // update_post v2
+        ],
+        vec![
+            "insert", "insert", "insert", "insert", "insert", "insert", "insert", "insert",
+            "insert", "insert", "update_pre", "update_pre", "update_pre", "update_pre",
+            "update_pre", "update_post", "update_post", "update_post", "update_post",
+            "update_post",
+        ],
+        vec![
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // v0
+            1, 1, 1, 1, 1, // v1
+            2, 2, 2, 2, 2, // v2
+        ],
+    );
+    assert_batches_eq(&expected, &batches);
     Ok(())
 }
 
 #[test]
 fn false_data_change_is_ignored() -> DeltaResult<()> {
     let batches = read_cdf_for_table("cdf-table-data-change", 0, 1, None)?;
-    let mut expected = vec![
-        "+----+--------------+-----------------+",
-        "| id | _change_type | _commit_version |",
-        "+----+--------------+-----------------+",
-        "| 0  | insert       | 0               |",
-        "| 1  | insert       | 0               |",
-        "| 2  | insert       | 0               |",
-        "| 3  | insert       | 0               |",
-        "| 4  | insert       | 0               |",
-        "| 5  | insert       | 0               |",
-        "| 6  | insert       | 0               |",
-        "| 7  | insert       | 0               |",
-        "| 8  | insert       | 0               |",
-        "| 9  | insert       | 0               |",
-        "+----+--------------+-----------------+",
-    ];
-    sort_lines!(expected);
-    assert_batches_sorted_eq!(expected, &batches);
+    let expected = simple_cdf_batch_i64(
+        (0..10).collect(),
+        vec!["insert"; 10],
+        vec![0; 10],
+    );
+    assert_batches_eq(&expected, &batches);
     Ok(())
 }
 
@@ -410,140 +551,163 @@ fn invalid_range_start_after_last_version_of_table() {
 #[test]
 fn partition_table() -> DeltaResult<()> {
     let batches = read_cdf_for_table("cdf-table-partitioned", 0, 2, None)?;
-    let mut expected = vec![
-        "+----+------+------+------------------+-----------------+",
-        "| id | text | part | _change_type     | _commit_version |",
-        "+----+------+------+------------------+-----------------+",
-        "| 0  | old  | 0    | insert           | 0               |",
-        "| 1  | old  | 1    | insert           | 0               |",
-        "| 2  | old  | 0    | insert           | 0               |",
-        "| 3  | old  | 1    | insert           | 0               |",
-        "| 4  | old  | 0    | insert           | 0               |",
-        "| 5  | old  | 1    | insert           | 0               |",
-        "| 3  | old  | 1    | delete           | 1               |",
-        "| 1  | old  | 1    | update_preimage  | 1               |",
-        "| 1  | new  | 1    | update_postimage | 1               |",
-        "| 0  | old  | 0    | delete           | 2               |",
-        "| 2  | old  | 0    | delete           | 2               |",
-        "| 4  | old  | 0    | delete           | 2               |",
-        "+----+------+------+------------------+-----------------+",
-    ];
-    sort_lines!(expected);
-    assert_batches_sorted_eq!(expected, &batches);
+    let expected = generate_batch(vec![
+        (
+            "id",
+            vec![0i64, 1, 2, 3, 4, 5, 3, 1, 1, 0, 2, 4].into_array(),
+        ),
+        (
+            "text",
+            vec![
+                "old", "old", "old", "old", "old", "old", "old", "old", "new", "old", "old", "old",
+            ]
+            .into_array(),
+        ),
+        (
+            "part",
+            vec![0i64, 1, 0, 1, 0, 1, 1, 1, 1, 0, 0, 0].into_array(),
+        ),
+        (
+            "_change_type",
+            vec![
+                "insert",
+                "insert",
+                "insert",
+                "insert",
+                "insert",
+                "insert",
+                "delete",
+                "update_preimage",
+                "update_postimage",
+                "delete",
+                "delete",
+                "delete",
+            ]
+            .into_array(),
+        ),
+        (
+            "_commit_version",
+            vec![0i64, 0, 0, 0, 0, 0, 1, 1, 1, 2, 2, 2].into_array(),
+        ),
+    ])?;
+    assert_batches_eq(&expected, &batches);
     Ok(())
 }
 
 #[test]
 fn backtick_column_names() -> DeltaResult<()> {
     let batches = read_cdf_for_table("cdf-table-backtick-column-names", 0, None, None)?;
-    let mut expected = vec![
-        "+--------+----------+--------------------------+--------------+-----------------+",
-        "| id.num | id.num`s | struct_col               | _change_type | _commit_version |",
-        "+--------+----------+--------------------------+--------------+-----------------+",
-        "| 2      | 10       | {field: 1, field.one: 2} | insert       | 0               |",
-        "| 4      | 10       | {field: 1, field.one: 2} | insert       | 0               |",
-        "| 1      | 10       | {field: 1, field.one: 2} | insert       | 1               |",
-        "| 3      | 10       | {field: 1, field.one: 2} | insert       | 1               |",
-        "| 5      | 10       | {field: 1, field.one: 2} | insert       | 1               |",
-        "+--------+----------+--------------------------+--------------+-----------------+",
-    ];
-    sort_lines!(expected);
-    assert_batches_sorted_eq!(expected, &batches);
+
+    // This test has struct columns with backtick names - construct with explicit schema
+    let struct_fields = delta_kernel::arrow::datatypes::Fields::from(vec![
+        Arc::new(delta_kernel::arrow::datatypes::Field::new(
+            "field",
+            delta_kernel::arrow::datatypes::DataType::Int32,
+            true,
+        )),
+        Arc::new(delta_kernel::arrow::datatypes::Field::new(
+            "field.one",
+            delta_kernel::arrow::datatypes::DataType::Int32,
+            true,
+        )),
+    ]);
+    let struct_col = delta_kernel::arrow::array::StructArray::new(
+        struct_fields.clone(),
+        vec![
+            Arc::new(Int32Array::from(vec![1, 1, 1, 1, 1])) as Arc<dyn delta_kernel::arrow::array::Array>,
+            Arc::new(Int32Array::from(vec![2, 2, 2, 2, 2])) as Arc<dyn delta_kernel::arrow::array::Array>,
+        ],
+        None,
+    );
+
+    let schema = Arc::new(ArrowSchema::new(vec![
+        delta_kernel::arrow::datatypes::Field::new("id.num", delta_kernel::arrow::datatypes::DataType::Int32, true),
+        delta_kernel::arrow::datatypes::Field::new("id.num`s", delta_kernel::arrow::datatypes::DataType::Int32, true),
+        delta_kernel::arrow::datatypes::Field::new(
+            "struct_col",
+            delta_kernel::arrow::datatypes::DataType::Struct(struct_fields),
+            true,
+        ),
+        delta_kernel::arrow::datatypes::Field::new("_change_type", delta_kernel::arrow::datatypes::DataType::Utf8, true),
+        delta_kernel::arrow::datatypes::Field::new("_commit_version", delta_kernel::arrow::datatypes::DataType::Int64, true),
+    ]));
+
+    let expected = RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(Int32Array::from(vec![2, 4, 1, 3, 5])),
+            Arc::new(Int32Array::from(vec![10, 10, 10, 10, 10])),
+            Arc::new(struct_col) as Arc<dyn delta_kernel::arrow::array::Array>,
+            Arc::new(delta_kernel::arrow::array::StringArray::from(vec![
+                "insert", "insert", "insert", "insert", "insert",
+            ])),
+            Arc::new(delta_kernel::arrow::array::Int64Array::from(vec![
+                0i64, 0, 1, 1, 1,
+            ])),
+        ],
+    )?;
+    assert_batches_eq(&expected, &batches);
     Ok(())
 }
 
 #[test]
 fn unconditional_delete() -> DeltaResult<()> {
     let batches = read_cdf_for_table("cdf-table-delete-unconditional", 0, None, None)?;
-    let mut expected = vec![
-        "+----+--------------+-----------------+",
-        "| id | _change_type | _commit_version |",
-        "+----+--------------+-----------------+",
-        "| 0  | insert       | 0               |",
-        "| 1  | insert       | 0               |",
-        "| 2  | insert       | 0               |",
-        "| 3  | insert       | 0               |",
-        "| 4  | insert       | 0               |",
-        "| 5  | insert       | 0               |",
-        "| 6  | insert       | 0               |",
-        "| 7  | insert       | 0               |",
-        "| 8  | insert       | 0               |",
-        "| 9  | insert       | 0               |",
-        "| 0  | delete       | 1               |",
-        "| 1  | delete       | 1               |",
-        "| 2  | delete       | 1               |",
-        "| 3  | delete       | 1               |",
-        "| 4  | delete       | 1               |",
-        "| 5  | delete       | 1               |",
-        "| 6  | delete       | 1               |",
-        "| 7  | delete       | 1               |",
-        "| 8  | delete       | 1               |",
-        "| 9  | delete       | 1               |",
-        "+----+--------------+-----------------+",
-    ];
-    sort_lines!(expected);
-    assert_batches_sorted_eq!(expected, &batches);
+    let mut ids: Vec<i64> = (0..10).collect();
+    ids.extend(0..10);
+    let mut change_types: Vec<&str> = vec!["insert"; 10];
+    change_types.extend(vec!["delete"; 10]);
+    let mut versions: Vec<i64> = vec![0; 10];
+    versions.extend(vec![1; 10]);
+    let expected = simple_cdf_batch_i64(ids, change_types, versions);
+    assert_batches_eq(&expected, &batches);
     Ok(())
 }
 
 #[test]
 fn conditional_delete_all_rows() -> DeltaResult<()> {
     let batches = read_cdf_for_table("cdf-table-delete-conditional-all-rows", 0, None, None)?;
-    let mut expected = vec![
-        "+----+--------------+-----------------+",
-        "| id | _change_type | _commit_version |",
-        "+----+--------------+-----------------+",
-        "| 0  | insert       | 0               |",
-        "| 1  | insert       | 0               |",
-        "| 2  | insert       | 0               |",
-        "| 3  | insert       | 0               |",
-        "| 4  | insert       | 0               |",
-        "| 5  | insert       | 0               |",
-        "| 6  | insert       | 0               |",
-        "| 7  | insert       | 0               |",
-        "| 8  | insert       | 0               |",
-        "| 9  | insert       | 0               |",
-        "| 0  | delete       | 1               |",
-        "| 1  | delete       | 1               |",
-        "| 2  | delete       | 1               |",
-        "| 3  | delete       | 1               |",
-        "| 4  | delete       | 1               |",
-        "| 5  | delete       | 1               |",
-        "| 6  | delete       | 1               |",
-        "| 7  | delete       | 1               |",
-        "| 8  | delete       | 1               |",
-        "| 9  | delete       | 1               |",
-        "+----+--------------+-----------------+",
-    ];
-    sort_lines!(expected);
-    assert_batches_sorted_eq!(expected, &batches);
+    let mut ids: Vec<i64> = (0..10).collect();
+    ids.extend(0..10);
+    let mut change_types: Vec<&str> = vec!["insert"; 10];
+    change_types.extend(vec!["delete"; 10]);
+    let mut versions: Vec<i64> = vec![0; 10];
+    versions.extend(vec![1; 10]);
+    let expected = simple_cdf_batch_i64(ids, change_types, versions);
+    assert_batches_eq(&expected, &batches);
     Ok(())
 }
 
 #[test]
 fn conditional_delete_two_rows() -> DeltaResult<()> {
     let batches = read_cdf_for_table("cdf-table-delete-conditional-two-rows", 0, None, None)?;
-    let mut expected = vec![
-        "+----+--------------+-----------------+",
-        "| id | _change_type | _commit_version |",
-        "+----+--------------+-----------------+",
-        "| 0  | insert       | 0               |",
-        "| 1  | insert       | 0               |",
-        "| 2  | insert       | 0               |",
-        "| 3  | insert       | 0               |",
-        "| 4  | insert       | 0               |",
-        "| 5  | insert       | 0               |",
-        "| 6  | insert       | 0               |",
-        "| 7  | insert       | 0               |",
-        "| 8  | insert       | 0               |",
-        "| 9  | insert       | 0               |",
-        "| 2  | delete       | 1               |",
-        "| 8  | delete       | 1               |",
-        "+----+--------------+-----------------+",
-    ];
-    sort_lines!(expected);
-    assert_batches_sorted_eq!(expected, &batches);
+    let mut ids: Vec<i64> = (0..10).collect();
+    ids.extend(vec![2, 8]);
+    let mut change_types: Vec<&str> = vec!["insert"; 10];
+    change_types.extend(vec!["delete"; 2]);
+    let mut versions: Vec<i64> = vec![0; 10];
+    versions.extend(vec![1; 2]);
+    let expected = simple_cdf_batch_i64(ids, change_types, versions);
+    assert_batches_eq(&expected, &batches);
     Ok(())
+}
+
+/// Helper to build expected data for column mapping CDF tests (id, name, value, _change_type, _commit_version)
+fn column_mapping_cdf_batch(
+    ids: Vec<i64>,
+    names: Vec<&'static str>,
+    values: Vec<f64>,
+    change_types: Vec<&'static str>,
+    versions: Vec<i64>,
+) -> RecordBatch {
+    generate_batch(vec![
+        ("id", ids.into_array()),
+        ("name", names.into_array()),
+        ("value", values.into_array()),
+        ("_change_type", change_types.into_array()),
+        ("_commit_version", versions.into_array()),
+    ])
+    .unwrap()
 }
 
 #[test]
@@ -553,33 +717,25 @@ fn cdf_with_column_mapping_name_mode() -> Result<(), Box<dyn error::Error>> {
     // mapping + CDF enabled in commit 0, so we created with column mapping and enabled CDF in
     // commit 1.
     let batches = read_cdf_for_table("cdf-column-mapping-name-mode", 1, None, None)?;
-    let mut expected = vec![
-        "+----+-------+-------+------------------+-----------------+",
-        "| id | name  | value | _change_type     | _commit_version |",
-        "+----+-------+-------+------------------+-----------------+",
-        "| 1  | Alice | 100.0 | delete           | 4               |",
-        "| 2  | Bob   | 200.0 | update_preimage  | 2               |",
-        "| 2  | Bob   | 250.0 | update_postimage | 2               |",
-        "| 4  | David | 400.0 | insert           | 3               |",
-        "+----+-------+-------+------------------+-----------------+",
-    ];
-    sort_lines!(expected);
-    assert_batches_sorted_eq!(expected, &batches);
+    let expected = column_mapping_cdf_batch(
+        vec![1, 2, 2, 4],
+        vec!["Alice", "Bob", "Bob", "David"],
+        vec![100.0, 200.0, 250.0, 400.0],
+        vec!["delete", "update_preimage", "update_postimage", "insert"],
+        vec![4, 2, 2, 3],
+    );
+    assert_batches_eq(&expected, &batches);
 
     // same as above but instead of protocol 2,5 this is 3,7 with columnMapping+DV features
     let batches = read_cdf_for_table("cdf-column-mapping-name-mode-3-7", 1, None, None)?;
-    let mut expected = vec![
-        "+----+-------+-------+------------------+-----------------+",
-        "| id | name  | value | _change_type     | _commit_version |",
-        "+----+-------+-------+------------------+-----------------+",
-        "| 1  | Alice | 100.0 | delete           | 4               |",
-        "| 2  | Bob   | 200.0 | update_preimage  | 2               |",
-        "| 2  | Bob   | 250.0 | update_postimage | 2               |",
-        "| 4  | David | 400.0 | insert           | 3               |",
-        "+----+-------+-------+------------------+-----------------+",
-    ];
-    sort_lines!(expected);
-    assert_batches_sorted_eq!(expected, &batches);
+    let expected = column_mapping_cdf_batch(
+        vec![1, 2, 2, 4],
+        vec!["Alice", "Bob", "Bob", "David"],
+        vec![100.0, 200.0, 250.0, 400.0],
+        vec!["delete", "update_preimage", "update_postimage", "insert"],
+        vec![4, 2, 2, 3],
+    );
+    assert_batches_eq(&expected, &batches);
 
     Ok(())
 }
@@ -591,17 +747,13 @@ fn cdf_with_column_mapping_id_mode() -> Result<(), Box<dyn error::Error>> {
     // mapping + CDF enabled in commit 0, so we created with column mapping and enabled CDF in
     // commit 1.
     let batches = read_cdf_for_table("cdf-column-mapping-id-mode", 1, None, None)?;
-    let mut expected = vec![
-        "+----+-------+-------+------------------+-----------------+",
-        "| id | name  | value | _change_type     | _commit_version |",
-        "+----+-------+-------+------------------+-----------------+",
-        "| 2  | Frank | 250.0 | update_preimage  | 2               |",
-        "| 2  | Frank | 275.0 | update_postimage | 2               |",
-        "| 3  | Grace | 350.0 | delete           | 4               |",
-        "| 4  | Henry | 450.0 | insert           | 3               |",
-        "+----+-------+-------+------------------+-----------------+",
-    ];
-    sort_lines!(expected);
-    assert_batches_sorted_eq!(expected, &batches);
+    let expected = column_mapping_cdf_batch(
+        vec![2, 2, 3, 4],
+        vec!["Frank", "Frank", "Grace", "Henry"],
+        vec![250.0, 275.0, 350.0, 450.0],
+        vec!["update_preimage", "update_postimage", "delete", "insert"],
+        vec![2, 2, 4, 3],
+    );
+    assert_batches_eq(&expected, &batches);
     Ok(())
 }

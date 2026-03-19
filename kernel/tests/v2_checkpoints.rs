@@ -9,8 +9,10 @@ use delta_kernel::{DeltaResult, Snapshot};
 
 mod common;
 
-use itertools::Itertools;
-use test_utils::{insert_data, load_test_data, read_scan, test_table_setup_mt};
+use test_utils::{
+    assert_batches_eq, generate_batch, insert_data, load_test_data, read_scan,
+    test_table_setup_mt, IntoArray,
+};
 
 fn read_v2_checkpoint_table(test_name: impl AsRef<str>) -> DeltaResult<Vec<RecordBatch>> {
     let test_dir = load_test_data("tests/data", test_name.as_ref()).unwrap();
@@ -26,125 +28,39 @@ fn read_v2_checkpoint_table(test_name: impl AsRef<str>) -> DeltaResult<Vec<Recor
     Ok(batches)
 }
 
-fn test_v2_checkpoint_with_table(
-    table_name: &str,
-    mut expected_table: Vec<String>,
-) -> DeltaResult<()> {
+fn test_v2_checkpoint_with_table(table_name: &str, expected: &RecordBatch) -> DeltaResult<()> {
     let batches = read_v2_checkpoint_table(table_name)?;
-
-    sort_lines!(expected_table);
-    assert_batches_sorted_eq!(expected_table, &batches);
+    assert_batches_eq(expected, &batches);
     Ok(())
 }
 
-/// Helper function to convert string slice vectors to String vectors
-fn to_string_vec(string_slice_vec: Vec<&str>) -> Vec<String> {
-    string_slice_vec
-        .into_iter()
-        .map(|s| s.to_string())
-        .collect()
+fn generate_sidecar_expected_data() -> RecordBatch {
+    let mut ids: Vec<i64> = Vec::new();
+    // 3 copies of id=0
+    ids.extend(std::iter::repeat_n(0, 3));
+    // 0..30
+    ids.extend(0..30);
+    // 0..100
+    ids.extend(0..100);
+    // 0..100
+    ids.extend(0..100);
+    // 0..1000
+    ids.extend(0..1000);
+    generate_batch(vec![("id", ids.into_array())]).unwrap()
 }
 
-fn generate_sidecar_expected_data() -> Vec<String> {
-    let header = vec![
-        "+-----+".to_string(),
-        "| id  |".to_string(),
-        "+-----+".to_string(),
-    ];
-
-    // Generate rows for different ranges
-    let generate_rows = |count: usize| -> Vec<String> {
-        (0..count)
-            .map(|id| format!("| {:<max_width$} |", id, max_width = 3))
-            .collect()
-    };
-
-    [
-        header,
-        vec!["| 0   |".to_string(); 3],
-        generate_rows(30),
-        generate_rows(100),
-        generate_rows(100),
-        generate_rows(1000),
-        vec!["+-----+".to_string()],
-    ]
-    .into_iter()
-    .flatten()
-    .collect_vec()
+fn get_simple_id_table() -> RecordBatch {
+    generate_batch(vec![("id", (0..10i64).collect::<Vec<_>>().into_array())]).unwrap()
 }
 
-// Rustfmt is disabled to maintain the readability of the expected table
-#[rustfmt::skip]
-fn get_simple_id_table() -> Vec<String> {
-    to_string_vec(vec![
-        "+----+",
-        "| id |",
-        "+----+",
-        "| 0  |",
-        "| 1  |",
-        "| 2  |",
-        "| 3  |",
-        "| 4  |",
-        "| 5  |",
-        "| 6  |",
-        "| 7  |",
-        "| 8  |",
-        "| 9  |",
-        "+----+",
-    ])
+fn get_classic_checkpoint_table() -> RecordBatch {
+    generate_batch(vec![("id", (0..20i64).collect::<Vec<_>>().into_array())]).unwrap()
 }
 
-// Rustfmt is disabled to maintain the readability of the expected table
-#[rustfmt::skip]
-fn get_classic_checkpoint_table() -> Vec<String> {
-    to_string_vec(vec![
-        "+----+",
-        "| id |",
-        "+----+",
-        "| 0  |",
-        "| 1  |",
-        "| 2  |",
-        "| 3  |",
-        "| 4  |",
-        "| 5  |",
-        "| 6  |",
-        "| 7  |",
-        "| 8  |",
-        "| 9  |",
-        "| 10 |",
-        "| 11 |",
-        "| 12 |",
-        "| 13 |",
-        "| 14 |",
-        "| 15 |",
-        "| 16 |",
-        "| 17 |",
-        "| 18 |",
-        "| 19 |",
-        "+----+",
-    ])
-}
-
-// Rustfmt is disabled to maintain the readability of the expected table
-#[rustfmt::skip]
-fn get_without_sidecars_table() -> Vec<String> {
-    to_string_vec(vec![
-        "+------+",
-        "| id   |",
-        "+------+",
-        "| 0    |",
-        "| 1    |",
-        "| 2    |",
-        "| 3    |",
-        "| 4    |",
-        "| 5    |",
-        "| 6    |",
-        "| 7    |",
-        "| 8    |",
-        "| 9    |",
-        "| 2718 |",
-        "+------+",
-    ])
+fn get_without_sidecars_table() -> RecordBatch {
+    let mut ids: Vec<i64> = (0..10).collect();
+    ids.push(2718);
+    generate_batch(vec![("id", ids.into_array())]).unwrap()
 }
 
 /// The test cases below are derived from delta-spark's `CheckpointSuite`.
@@ -169,7 +85,7 @@ fn get_without_sidecars_table() -> Vec<String> {
 fn v2_checkpoints_json_with_sidecars() -> DeltaResult<()> {
     test_v2_checkpoint_with_table(
         "v2-checkpoints-json-with-sidecars",
-        generate_sidecar_expected_data(),
+        &generate_sidecar_expected_data(),
     )
 }
 
@@ -177,7 +93,7 @@ fn v2_checkpoints_json_with_sidecars() -> DeltaResult<()> {
 fn v2_checkpoints_parquet_with_sidecars() -> DeltaResult<()> {
     test_v2_checkpoint_with_table(
         "v2-checkpoints-parquet-with-sidecars",
-        generate_sidecar_expected_data(),
+        &generate_sidecar_expected_data(),
     )
 }
 
@@ -185,7 +101,7 @@ fn v2_checkpoints_parquet_with_sidecars() -> DeltaResult<()> {
 fn v2_checkpoints_json_without_sidecars() -> DeltaResult<()> {
     test_v2_checkpoint_with_table(
         "v2-checkpoints-json-without-sidecars",
-        get_without_sidecars_table(),
+        &get_without_sidecars_table(),
     )
 }
 
@@ -193,20 +109,20 @@ fn v2_checkpoints_json_without_sidecars() -> DeltaResult<()> {
 fn v2_checkpoints_parquet_without_sidecars() -> DeltaResult<()> {
     test_v2_checkpoint_with_table(
         "v2-checkpoints-parquet-without-sidecars",
-        get_without_sidecars_table(),
+        &get_without_sidecars_table(),
     )
 }
 
 #[test]
 fn v2_classic_checkpoint_json() -> DeltaResult<()> {
-    test_v2_checkpoint_with_table("v2-classic-checkpoint-json", get_classic_checkpoint_table())
+    test_v2_checkpoint_with_table("v2-classic-checkpoint-json", &get_classic_checkpoint_table())
 }
 
 #[test]
 fn v2_classic_checkpoint_parquet() -> DeltaResult<()> {
     test_v2_checkpoint_with_table(
         "v2-classic-checkpoint-parquet",
-        get_classic_checkpoint_table(),
+        &get_classic_checkpoint_table(),
     )
 }
 
@@ -214,7 +130,7 @@ fn v2_classic_checkpoint_parquet() -> DeltaResult<()> {
 fn v2_checkpoints_json_with_last_checkpoint() -> DeltaResult<()> {
     test_v2_checkpoint_with_table(
         "v2-checkpoints-json-with-last-checkpoint",
-        get_simple_id_table(),
+        &get_simple_id_table(),
     )
 }
 
@@ -222,7 +138,7 @@ fn v2_checkpoints_json_with_last_checkpoint() -> DeltaResult<()> {
 fn v2_checkpoints_parquet_with_last_checkpoint() -> DeltaResult<()> {
     test_v2_checkpoint_with_table(
         "v2-checkpoints-parquet-with-last-checkpoint",
-        get_simple_id_table(),
+        &get_simple_id_table(),
     )
 }
 
@@ -262,7 +178,7 @@ async fn test_v2_checkpoint_parquet_write() -> DeltaResult<()> {
         .post_commit_snapshot()
         .expect("expected post-commit snapshot");
 
-    // This writes to parquet — will fail if the checkpointMetadata batch has a different
+    // This writes to parquet -- will fail if the checkpointMetadata batch has a different
     // schema than the action batches.
     snapshot.clone().checkpoint(engine.as_ref())?;
 
@@ -288,16 +204,8 @@ async fn test_v2_checkpoint_parquet_write() -> DeltaResult<()> {
     // Verify reading data from the checkpointed snapshot returns the expected rows
     let scan = snapshot2.scan_builder().build()?;
     let batches = read_scan(&scan, engine.clone() as Arc<dyn delta_kernel::Engine>)?;
-    assert_batches_sorted_eq!(
-        vec![
-            "+-------+",
-            "| value |",
-            "+-------+",
-            "| 1     |",
-            "+-------+",
-        ],
-        &batches
-    );
+    let expected = generate_batch(vec![("value", vec![1i32].into_array())]).unwrap();
+    assert_batches_eq(&expected, &batches);
 
     Ok(())
 }

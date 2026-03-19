@@ -22,9 +22,9 @@ use delta_kernel::{Engine, FileMeta, Snapshot};
 use itertools::Itertools;
 use object_store::{memory::InMemory, path::Path, ObjectStore};
 use test_utils::{
-    actions_to_string, add_commit, generate_batch, generate_simple_batch, into_record_batch,
-    load_test_data, read_scan, record_batch_to_bytes, record_batch_to_bytes_with_props, IntoArray,
-    TestAction, METADATA,
+    actions_to_string, add_commit, assert_batches_eq, generate_batch, generate_simple_batch,
+    into_record_batch, load_test_data, make_top_level_fields_nullable, read_scan,
+    record_batch_to_bytes, record_batch_to_bytes_with_props, IntoArray, TestAction, METADATA,
 };
 use url::Url;
 
@@ -33,20 +33,6 @@ mod common;
 const PARQUET_FILE1: &str = "part-00000-a72b1fb3-f2df-41fe-a8f0-e65b746382dd-c000.snappy.parquet";
 const PARQUET_FILE2: &str = "part-00001-c506e79a-0bf8-4e2b-a42b-9731b2e490ae-c000.snappy.parquet";
 const PARQUET_FILE3: &str = "part-00002-c506e79a-0bf8-4e2b-a42b-9731b2e490ff-c000.snappy.parquet";
-
-/// Convert all top-level fields in a RecordBatch to nullable, matching Delta table schema
-/// conventions where the table metadata declares columns as nullable.
-fn make_top_level_fields_nullable(batch: &RecordBatch) -> RecordBatch {
-    let schema = Arc::new(ArrowSchema::new(
-        batch
-            .schema()
-            .fields()
-            .iter()
-            .map(|f| ArrowField::new(f.name(), f.data_type().clone(), true))
-            .collect::<Vec<_>>(),
-    ));
-    RecordBatch::try_new(schema, batch.columns().to_vec()).unwrap()
-}
 
 #[tokio::test]
 async fn single_commit_two_add_files() -> Result<(), Box<dyn std::error::Error>> {
@@ -336,22 +322,14 @@ async fn stats() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Read a scan using `Scan::execute` and compare results against an expected `RecordBatch`.
 fn read_with_execute(
     engine: Arc<dyn Engine>,
     scan: &Scan,
-    expected: &[String],
+    expected: &RecordBatch,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let result_schema = Arc::new(ArrowSchema::try_from_kernel(
-        scan.logical_schema().as_ref(),
-    )?);
     let batches = read_scan(scan, engine)?;
-
-    if expected.is_empty() {
-        assert_eq!(batches.len(), 0);
-    } else {
-        let batch = concat_batches(&result_schema, &batches)?;
-        assert_batches_sorted_eq!(expected, &[batch]);
-    }
+    assert_batches_eq(expected, &batches);
     Ok(())
 }
 
@@ -359,11 +337,12 @@ fn scan_metadata_callback(batches: &mut Vec<ScanFile>, scan_file: ScanFile) {
     batches.push(scan_file);
 }
 
+/// Read a scan using `Scan::scan_metadata` and compare results against an expected `RecordBatch`.
 fn read_with_scan_metadata(
     location: &Url,
     engine: &dyn Engine,
     scan: &Scan,
-    expected: &[String],
+    expected: &RecordBatch,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let result_schema = Arc::new(ArrowSchema::try_from_kernel(
         scan.logical_schema().as_ref(),
@@ -421,20 +400,23 @@ fn read_with_scan_metadata(
         }
     }
 
-    if expected.is_empty() {
-        assert_eq!(batches.len(), 0);
+    if expected.num_rows() == 0 {
+        let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(total_rows, 0, "Expected 0 rows but got {total_rows}");
     } else {
-        let batch = concat_batches(&result_schema, &batches)?;
-        assert_batches_sorted_eq!(expected, &[batch]);
+        let actual = concat_batches(&result_schema, &batches)?;
+        assert_batches_eq(expected, &[actual]);
     }
     Ok(())
 }
 
+/// Read a Delta table and compare results (via both execute and scan_metadata paths) against
+/// an expected `RecordBatch`.
 fn read_table_data(
     path: &str,
     select_cols: Option<&[&str]>,
     predicate: Option<Pred>,
-    mut expected: Vec<String>,
+    expected: RecordBatch,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let path = std::fs::canonicalize(PathBuf::from(path))?;
     let predicate = predicate.map(Arc::new);
@@ -457,61 +439,91 @@ fn read_table_data(
         .with_predicate(predicate.clone())
         .build()?;
 
-    sort_lines!(expected);
     read_with_scan_metadata(&url, engine.as_ref(), &scan, &expected)?;
     read_with_execute(engine, &scan, &expected)?;
     Ok(())
 }
 
-// util to take a Vec<&str> and call read_table_data with Vec<String>
-fn read_table_data_str(
-    path: &str,
-    select_cols: Option<&[&str]>,
-    predicate: Option<Pred>,
-    expected: Vec<&str>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    read_table_data(
-        path,
-        select_cols,
-        predicate,
-        expected.into_iter().map(String::from).collect(),
-    )
+/// Build a `RecordBatch` for the `basic_partitioned` table filtered to the given number values,
+/// with columns `(a_float: f64, number: i64)`.
+fn table_for_numbers(nums: Vec<u32>) -> RecordBatch {
+    let floats: Vec<f64> = nums.iter().map(|n| *n as f64 + (*n as f64 / 10.0)).collect();
+    let ints: Vec<i64> = nums.iter().map(|n| *n as i64).collect();
+    generate_batch(vec![
+        ("a_float", floats.into_array()),
+        ("number", ints.into_array()),
+    ])
+    .unwrap()
+}
+
+/// Build a `RecordBatch` for the `basic_partitioned` table filtered to the given letter values,
+/// with columns `(letter: Utf8, number: i64)`.
+fn table_for_letters(letters: &[char]) -> RecordBatch {
+    let rows: Vec<(i64, &'static str)> =
+        vec![(1, "a"), (2, "b"), (3, "c"), (4, "a"), (5, "e")];
+    let mut letter_vals: Vec<&'static str> = vec![];
+    let mut number_vals: Vec<i64> = vec![];
+    for (num, letter) in rows {
+        if letters.contains(&letter.chars().next().unwrap()) {
+            letter_vals.push(letter);
+            number_vals.push(num);
+        }
+    }
+    generate_batch(vec![
+        ("letter", letter_vals.into_array()),
+        ("number", number_vals.into_array()),
+    ])
+    .unwrap()
 }
 
 #[test]
 fn data() -> Result<(), Box<dyn std::error::Error>> {
-    let expected = vec![
-        "+--------+--------+---------+",
-        "| letter | number | a_float |",
-        "+--------+--------+---------+",
-        "|        | 6      | 6.6     |",
-        "| a      | 1      | 1.1     |",
-        "| a      | 4      | 4.4     |",
-        "| b      | 2      | 2.2     |",
-        "| c      | 3      | 3.3     |",
-        "| e      | 5      | 5.5     |",
-        "+--------+--------+---------+",
-    ];
-    read_table_data_str("./tests/data/basic_partitioned", None, None, expected)?;
+    let expected = generate_batch(vec![
+        (
+            "letter",
+            vec![
+                None,
+                Some("a"),
+                Some("a"),
+                Some("b"),
+                Some("c"),
+                Some("e"),
+            ]
+            .into_array(),
+        ),
+        ("number", vec![6i64, 1, 4, 2, 3, 5].into_array()),
+        (
+            "a_float",
+            vec![6.6, 1.1, 4.4, 2.2, 3.3, 5.5].into_array(),
+        ),
+    ])?;
+    read_table_data("./tests/data/basic_partitioned", None, None, expected)?;
 
     Ok(())
 }
 
 #[test]
 fn column_ordering() -> Result<(), Box<dyn std::error::Error>> {
-    let expected = vec![
-        "+---------+--------+--------+",
-        "| a_float | letter | number |",
-        "+---------+--------+--------+",
-        "| 6.6     |        | 6      |",
-        "| 4.4     | a      | 4      |",
-        "| 5.5     | e      | 5      |",
-        "| 1.1     | a      | 1      |",
-        "| 2.2     | b      | 2      |",
-        "| 3.3     | c      | 3      |",
-        "+---------+--------+--------+",
-    ];
-    read_table_data_str(
+    let expected = generate_batch(vec![
+        (
+            "a_float",
+            vec![6.6, 4.4, 5.5, 1.1, 2.2, 3.3].into_array(),
+        ),
+        (
+            "letter",
+            vec![
+                None,
+                Some("a"),
+                Some("e"),
+                Some("a"),
+                Some("b"),
+                Some("c"),
+            ]
+            .into_array(),
+        ),
+        ("number", vec![6i64, 4, 5, 1, 2, 3].into_array()),
+    ])?;
+    read_table_data(
         "./tests/data/basic_partitioned",
         Some(&["a_float", "letter", "number"]),
         None,
@@ -523,19 +535,14 @@ fn column_ordering() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn column_ordering_and_projection() -> Result<(), Box<dyn std::error::Error>> {
-    let expected = vec![
-        "+---------+--------+",
-        "| a_float | number |",
-        "+---------+--------+",
-        "| 6.6     | 6      |",
-        "| 4.4     | 4      |",
-        "| 5.5     | 5      |",
-        "| 1.1     | 1      |",
-        "| 2.2     | 2      |",
-        "| 3.3     | 3      |",
-        "+---------+--------+",
-    ];
-    read_table_data_str(
+    let expected = generate_batch(vec![
+        (
+            "a_float",
+            vec![6.6, 4.4, 5.5, 1.1, 2.2, 3.3].into_array(),
+        ),
+        ("number", vec![6i64, 4, 5, 1, 2, 3].into_array()),
+    ])?;
+    read_table_data(
         "./tests/data/basic_partitioned",
         Some(&["a_float", "number"]),
         None,
@@ -543,43 +550,6 @@ fn column_ordering_and_projection() -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     Ok(())
-}
-
-// get the basic_partitioned table for a set of expected numbers
-fn table_for_numbers(nums: Vec<u32>) -> Vec<String> {
-    let mut res: Vec<String> = vec![
-        "+---------+--------+",
-        "| a_float | number |",
-        "+---------+--------+",
-    ]
-    .into_iter()
-    .map(String::from)
-    .collect();
-    for num in nums.iter() {
-        res.push(format!("| {num}.{num}     | {num}      |"));
-    }
-    res.push("+---------+--------+".to_string());
-    res
-}
-
-// get the basic_partitioned table for a set of expected letters
-fn table_for_letters(letters: &[char]) -> Vec<String> {
-    let mut res: Vec<String> = vec![
-        "+--------+--------+",
-        "| letter | number |",
-        "+--------+--------+",
-    ]
-    .into_iter()
-    .map(String::from)
-    .collect();
-    let rows = vec![(1, 'a'), (2, 'b'), (3, 'c'), (4, 'a'), (5, 'e')];
-    for (num, letter) in rows {
-        if letters.contains(&letter) {
-            res.push(format!("| {letter}      | {num}      |"));
-        }
-    }
-    res.push("+--------+--------+".to_string());
-    res
 }
 
 #[rstest::rstest]
@@ -609,7 +579,7 @@ fn table_for_letters(letters: &[char]) -> Vec<String> {
 )]
 fn predicate_on_number(
     #[case] pred: Pred,
-    #[case] expected: Vec<String>,
+    #[case] expected: RecordBatch,
 ) -> Result<(), Box<dyn std::error::Error>> {
     read_table_data(
         "./tests/data/basic_partitioned",
@@ -623,16 +593,10 @@ fn predicate_on_number(
 #[rstest::rstest]
 #[case::is_null(
     column_expr!("letter").is_null(),
-    vec![
-        "+--------+--------+",
-        "| letter | number |",
-        "+--------+--------+",
-        "|        | 6      |",
-        "+--------+--------+",
-    ]
-    .into_iter()
-    .map(String::from)
-    .collect()
+    generate_batch(vec![
+        ("letter", vec![None::<&str>].into_array()),
+        ("number", vec![6i64].into_array()),
+    ]).unwrap()
 )]
 #[case::is_not_null(
     column_expr!("letter").is_not_null(),
@@ -664,7 +628,7 @@ fn predicate_on_number(
 )]
 fn predicate_on_letter(
     #[case] pred: Pred,
-    #[case] expected: Vec<String>,
+    #[case] expected: RecordBatch,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Test basic column pruning. Note that the actual predicate machinery is already well-tested,
     // so we're just testing wiring here.
@@ -684,21 +648,10 @@ fn predicate_on_letter(
         column_expr!("letter").gt(Expr::literal("a")),
         column_expr!("number").gt(Expr::literal(3i64)),
     ),
-    vec![
-        "+--------+--------+",
-        "| letter | number |",
-        "+--------+--------+",
-        "|        | 6      |",
-        "| a      | 1      |",
-        "| a      | 4      |",
-        "| b      | 2      |",
-        "| c      | 3      |",
-        "| e      | 5      |",
-        "+--------+--------+",
-    ]
-    .into_iter()
-    .map(String::from)
-    .collect()
+    generate_batch(vec![
+        ("letter", vec![None, Some("a"), Some("a"), Some("b"), Some("c"), Some("e")].into_array()),
+        ("number", vec![6i64, 1, 4, 2, 3, 5].into_array()),
+    ]).unwrap()
 )]
 #[case::and_with_pruning(
     Pred::and(
@@ -720,7 +673,7 @@ fn predicate_on_letter(
 )]
 fn predicate_on_letter_and_number(
     #[case] pred: Pred,
-    #[case] expected: Vec<String>,
+    #[case] expected: RecordBatch,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Partition skipping and file skipping are currently implemented separately. Mixing them in an
     // AND clause will evaulate each separately, but mixing them in an OR clause disables both.
@@ -760,7 +713,7 @@ fn predicate_on_letter_and_number(
 )]
 fn predicate_on_number_not(
     #[case] pred: Pred,
-    #[case] expected: Vec<String>,
+    #[case] expected: RecordBatch,
 ) -> Result<(), Box<dyn std::error::Error>> {
     read_table_data(
         "./tests/data/basic_partitioned",
@@ -773,15 +726,11 @@ fn predicate_on_number_not(
 
 #[test]
 fn predicate_on_number_with_not_null() -> Result<(), Box<dyn std::error::Error>> {
-    let expected = vec![
-        "+---------+--------+",
-        "| a_float | number |",
-        "+---------+--------+",
-        "| 1.1     | 1      |",
-        "| 2.2     | 2      |",
-        "+---------+--------+",
-    ];
-    read_table_data_str(
+    let expected = generate_batch(vec![
+        ("a_float", vec![1.1, 2.2].into_array()),
+        ("number", vec![1i64, 2].into_array()),
+    ])?;
+    read_table_data(
         "./tests/data/basic_partitioned",
         Some(&["a_float", "number"]),
         Some(Pred::and(
@@ -795,8 +744,12 @@ fn predicate_on_number_with_not_null() -> Result<(), Box<dyn std::error::Error>>
 
 #[test]
 fn predicate_null() -> Result<(), Box<dyn std::error::Error>> {
-    let expected = vec![]; // number is never null
-    read_table_data_str(
+    // number is never null, so the result should be empty
+    let expected = RecordBatch::new_empty(Arc::new(ArrowSchema::new(vec![
+        ArrowField::new("a_float", delta_kernel::arrow::datatypes::DataType::Float64, false),
+        ArrowField::new("number", delta_kernel::arrow::datatypes::DataType::Int64, false),
+    ])));
+    read_table_data(
         "./tests/data/basic_partitioned",
         Some(&["a_float", "number"]),
         Some(column_expr!("number").is_null()),
@@ -807,23 +760,29 @@ fn predicate_null() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn mixed_null() -> Result<(), Box<dyn std::error::Error>> {
-    let expected = vec![
-        "+------+--------------+",
-        "| part | n            |",
-        "+------+--------------+",
-        "| 0    |              |",
-        "| 0    |              |",
-        "| 0    |              |",
-        "| 0    |              |",
-        "| 0    |              |",
-        "| 2    |              |",
-        "| 2    | non-null-mix |",
-        "| 2    |              |",
-        "| 2    | non-null-mix |",
-        "| 2    |              |",
-        "+------+--------------+",
-    ];
-    read_table_data_str(
+    let expected = generate_batch(vec![
+        (
+            "part",
+            vec![0i64, 0, 0, 0, 0, 2, 2, 2, 2, 2].into_array(),
+        ),
+        (
+            "n",
+            vec![
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some("non-null-mix"),
+                None,
+                Some("non-null-mix"),
+                None,
+            ]
+            .into_array(),
+        ),
+    ])?;
+    read_table_data(
         "./tests/data/mixed-nulls",
         Some(&["part", "n"]),
         Some(column_expr!("n").is_null()),
@@ -834,23 +793,29 @@ fn mixed_null() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn mixed_not_null() -> Result<(), Box<dyn std::error::Error>> {
-    let expected = vec![
-        "+------+--------------+",
-        "| part | n            |",
-        "+------+--------------+",
-        "| 1    | non-null     |",
-        "| 1    | non-null     |",
-        "| 1    | non-null     |",
-        "| 1    | non-null     |",
-        "| 1    | non-null     |",
-        "| 2    |              |",
-        "| 2    |              |",
-        "| 2    |              |",
-        "| 2    | non-null-mix |",
-        "| 2    | non-null-mix |",
-        "+------+--------------+",
-    ];
-    read_table_data_str(
+    let expected = generate_batch(vec![
+        (
+            "part",
+            vec![1i64, 1, 1, 1, 1, 2, 2, 2, 2, 2].into_array(),
+        ),
+        (
+            "n",
+            vec![
+                Some("non-null"),
+                Some("non-null"),
+                Some("non-null"),
+                Some("non-null"),
+                Some("non-null"),
+                None,
+                None,
+                None,
+                Some("non-null-mix"),
+                Some("non-null-mix"),
+            ]
+            .into_array(),
+        ),
+    ])?;
+    read_table_data(
         "./tests/data/mixed-nulls",
         Some(&["part", "n"]),
         Some(column_expr!("n").is_not_null()),
@@ -890,7 +855,7 @@ fn mixed_not_null() -> Result<(), Box<dyn std::error::Error>> {
 )]
 fn and_or_predicates(
     #[case] pred: Pred,
-    #[case] expected: Vec<String>,
+    #[case] expected: RecordBatch,
 ) -> Result<(), Box<dyn std::error::Error>> {
     read_table_data(
         "./tests/data/basic_partitioned",
@@ -928,11 +893,14 @@ fn and_or_predicates(
         column_expr!("number").gt(Expr::literal(4i64)),
         Pred::not(column_expr!("a_float").gt(Expr::literal(5.5))),
     )),
-    vec![]
+    RecordBatch::new_empty(Arc::new(ArrowSchema::new(vec![
+        ArrowField::new("a_float", delta_kernel::arrow::datatypes::DataType::Float64, false),
+        ArrowField::new("number", delta_kernel::arrow::datatypes::DataType::Int64, false),
+    ])))
 )]
 fn not_and_or_predicates(
     #[case] pred: Pred,
-    #[case] expected: Vec<String>,
+    #[case] expected: RecordBatch,
 ) -> Result<(), Box<dyn std::error::Error>> {
     read_table_data(
         "./tests/data/basic_partitioned",
@@ -983,7 +951,7 @@ fn not_and_or_predicates(
 )]
 fn invalid_skips_none_predicates(
     #[case] pred: Pred,
-    #[case] expected: Vec<String>,
+    #[case] expected: RecordBatch,
 ) -> Result<(), Box<dyn std::error::Error>> {
     read_table_data(
         "./tests/data/basic_partitioned",
@@ -996,21 +964,11 @@ fn invalid_skips_none_predicates(
 
 #[test]
 fn with_predicate_and_removes() -> Result<(), Box<dyn std::error::Error>> {
-    let expected = vec![
-        "+-------+",
-        "| value |",
-        "+-------+",
-        "| 1     |",
-        "| 2     |",
-        "| 3     |",
-        "| 4     |",
-        "| 5     |",
-        "| 6     |",
-        "| 7     |",
-        "| 8     |",
-        "+-------+",
-    ];
-    read_table_data_str(
+    let expected = generate_batch(vec![(
+        "value",
+        vec![1i64, 2, 3, 4, 5, 6, 7, 8].into_array(),
+    )])?;
+    read_table_data(
         "./tests/data/table-with-dv-small/",
         None,
         Some(Pred::gt(column_expr!("value"), Expr::literal(3))),
@@ -1133,57 +1091,162 @@ async fn predicate_on_non_nullable_column_missing_stats() -> Result<(), Box<dyn 
 
 #[test]
 fn short_dv() -> Result<(), Box<dyn std::error::Error>> {
-    let expected = vec![
-        "+----+-------+--------------------------+---------------------+",
-        "| id | value | timestamp                | rand                |",
-        "+----+-------+--------------------------+---------------------+",
-        "| 3  | 3     | 2023-05-31T18:58:33.633Z | 0.7918174793484931  |",
-        "| 4  | 4     | 2023-05-31T18:58:33.633Z | 0.9281049271981882  |",
-        "| 5  | 5     | 2023-05-31T18:58:33.633Z | 0.27796520310701633 |",
-        "| 6  | 6     | 2023-05-31T18:58:33.633Z | 0.15263801464228832 |",
-        "| 7  | 7     | 2023-05-31T18:58:33.633Z | 0.1981143710215575  |",
-        "| 8  | 8     | 2023-05-31T18:58:33.633Z | 0.3069439236599195  |",
-        "| 9  | 9     | 2023-05-31T18:58:33.633Z | 0.5175919190815845  |",
-        "+----+-------+--------------------------+---------------------+",
-    ];
-    read_table_data_str("./tests/data/with-short-dv/", None, None, expected)?;
+    use delta_kernel::arrow::array::{Float64Array, Int64Array, StringArray, TimestampMicrosecondArray};
+
+    let schema = Arc::new(ArrowSchema::new(vec![
+        ArrowField::new("id", delta_kernel::arrow::datatypes::DataType::Int64, false),
+        ArrowField::new("value", delta_kernel::arrow::datatypes::DataType::Utf8, false),
+        ArrowField::new(
+            "timestamp",
+            delta_kernel::arrow::datatypes::DataType::Timestamp(
+                delta_kernel::arrow::datatypes::TimeUnit::Microsecond,
+                Some("UTC".into()),
+            ),
+            false,
+        ),
+        ArrowField::new("rand", delta_kernel::arrow::datatypes::DataType::Float64, false),
+    ]));
+    // 2023-05-31T18:58:33.633Z in microseconds
+    let ts_micros = 1685559513633000i64;
+    let expected = RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(Int64Array::from(vec![3, 4, 5, 6, 7, 8, 9])),
+            Arc::new(StringArray::from(vec!["3", "4", "5", "6", "7", "8", "9"])),
+            Arc::new(
+                TimestampMicrosecondArray::from(vec![ts_micros; 7])
+                    .with_timezone("UTC"),
+            ),
+            Arc::new(Float64Array::from(vec![
+                0.7918174793484931,
+                0.9281049271981882,
+                0.27796520310701633,
+                0.15263801464228832,
+                0.1981143710215575,
+                0.3069439236599195,
+                0.5175919190815845,
+            ])),
+        ],
+    )?;
+    read_table_data("./tests/data/with-short-dv/", None, None, expected)?;
     Ok(())
 }
 
 #[test]
 fn basic_decimal() -> Result<(), Box<dyn std::error::Error>> {
-    let expected = vec![
-        "+----------------+---------+--------------+------------------------+",
-        "| part           | col1    | col2         | col3                   |",
-        "+----------------+---------+--------------+------------------------+",
-        "| -2342342.23423 | -999.99 | -99999.99999 | -9999999999.9999999999 |",
-        "| 0.00004        | 0.00    | 0.00000      | 0.0000000000           |",
-        "| 234.00000      | 1.00    | 2.00000      | 3.0000000000           |",
-        "| 2342222.23454  | 111.11  | 22222.22222  | 3333333333.3333333333  |",
-        "+----------------+---------+--------------+------------------------+",
-    ];
-    read_table_data_str("./tests/data/basic-decimal-table/", None, None, expected)?;
+    use delta_kernel::arrow::array::Decimal128Array;
+    use delta_kernel::arrow::datatypes::DataType as ArrowDT;
+
+    let schema = Arc::new(ArrowSchema::new(vec![
+        ArrowField::new("part", ArrowDT::Decimal128(12, 5), false),
+        ArrowField::new("col1", ArrowDT::Decimal128(5, 2), false),
+        ArrowField::new("col2", ArrowDT::Decimal128(10, 5), false),
+        ArrowField::new("col3", ArrowDT::Decimal128(20, 10), false),
+    ]));
+
+    // part values: -2342342.23423, 0.00004, 234.00000, 2342222.23454
+    // col1 values: -999.99, 0.00, 1.00, 111.11
+    // col2 values: -99999.99999, 0.00000, 2.00000, 22222.22222
+    // col3 values: -9999999999.9999999999, 0.0000000000, 3.0000000000, 3333333333.3333333333
+    let expected = RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(
+                Decimal128Array::from(vec![
+                    -234234223423i128,
+                    4i128,
+                    23400000i128,
+                    234222223454i128,
+                ])
+                .with_precision_and_scale(12, 5)?,
+            ),
+            Arc::new(
+                Decimal128Array::from(vec![-99999i128, 0i128, 100i128, 11111i128])
+                    .with_precision_and_scale(5, 2)?,
+            ),
+            Arc::new(
+                Decimal128Array::from(vec![
+                    -9999999999i128,
+                    0i128,
+                    200000i128,
+                    2222222222i128,
+                ])
+                .with_precision_and_scale(10, 5)?,
+            ),
+            Arc::new(
+                Decimal128Array::from(vec![
+                    -99999999999999999999i128,
+                    0i128,
+                    30000000000i128,
+                    33333333333333333333i128,
+                ])
+                .with_precision_and_scale(20, 10)?,
+            ),
+        ],
+    )?;
+    read_table_data("./tests/data/basic-decimal-table/", None, None, expected)?;
     Ok(())
 }
 
 #[test]
 fn timestamp_ntz() -> Result<(), Box<dyn std::error::Error>> {
-    let expected = vec![
-        "+----+----------------------------+----------------------------+",
-        "| id | tsNtz                      | tsNtzPartition             |",
-        "+----+----------------------------+----------------------------+",
-        "| 0  | 2021-11-18T02:30:00.123456 | 2021-11-18T02:30:00.123456 |",
-        "| 1  | 2013-07-05T17:01:00.123456 | 2021-11-18T02:30:00.123456 |",
-        "| 2  |                            | 2021-11-18T02:30:00.123456 |",
-        "| 3  | 2021-11-18T02:30:00.123456 | 2013-07-05T17:01:00.123456 |",
-        "| 4  | 2013-07-05T17:01:00.123456 | 2013-07-05T17:01:00.123456 |",
-        "| 5  |                            | 2013-07-05T17:01:00.123456 |",
-        "| 6  | 2021-11-18T02:30:00.123456 |                            |",
-        "| 7  | 2013-07-05T17:01:00.123456 |                            |",
-        "| 8  |                            |                            |",
-        "+----+----------------------------+----------------------------+",
-    ];
-    read_table_data_str(
+    use delta_kernel::arrow::array::{Int64Array, TimestampMicrosecondArray};
+    use delta_kernel::arrow::datatypes::DataType as ArrowDT;
+
+    let schema = Arc::new(ArrowSchema::new(vec![
+        ArrowField::new("id", ArrowDT::Int64, false),
+        ArrowField::new(
+            "tsNtz",
+            ArrowDT::Timestamp(
+                delta_kernel::arrow::datatypes::TimeUnit::Microsecond,
+                None,
+            ),
+            true,
+        ),
+        ArrowField::new(
+            "tsNtzPartition",
+            ArrowDT::Timestamp(
+                delta_kernel::arrow::datatypes::TimeUnit::Microsecond,
+                None,
+            ),
+            true,
+        ),
+    ]));
+
+    // 2021-11-18T02:30:00.123456 in micros
+    let ts1 = 1637202600123456i64;
+    // 2013-07-05T17:01:00.123456 in micros
+    let ts2 = 1373043660123456i64;
+
+    let expected = RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(Int64Array::from(vec![0, 1, 2, 3, 4, 5, 6, 7, 8])),
+            Arc::new(TimestampMicrosecondArray::from(vec![
+                Some(ts1),
+                Some(ts2),
+                None,
+                Some(ts1),
+                Some(ts2),
+                None,
+                Some(ts1),
+                Some(ts2),
+                None,
+            ])),
+            Arc::new(TimestampMicrosecondArray::from(vec![
+                Some(ts1),
+                Some(ts1),
+                Some(ts1),
+                Some(ts2),
+                Some(ts2),
+                Some(ts2),
+                None,
+                None,
+                None,
+            ])),
+        ],
+    )?;
+    read_table_data(
         "./tests/data/data-reader-timestamp_ntz/",
         None,
         None,
@@ -1194,14 +1257,46 @@ fn timestamp_ntz() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn type_widening_basic() -> Result<(), Box<dyn std::error::Error>> {
-    let expected = vec![
-        "+---------------------+---------------------+--------------------+----------------+----------------+----------------+----------------------------+",
-        "| byte_long           | int_long            | float_double       | byte_double    | short_double   | int_double     | date_timestamp_ntz         |",
-        "+---------------------+---------------------+--------------------+----------------+----------------+----------------+----------------------------+",
-        "| 1                   | 2                   | 3.4000000953674316 | 5.0            | 6.0            | 7.0            | 2024-09-09T00:00:00        |",
-        "| 9223372036854775807 | 9223372036854775807 | 1.234567890123     | 1.234567890123 | 1.234567890123 | 1.234567890123 | 2024-09-09T12:34:56.123456 |",
-        "+---------------------+---------------------+--------------------+----------------+----------------+----------------+----------------------------+",
-   ];
+    use delta_kernel::arrow::array::{Float64Array, Int64Array, TimestampMicrosecondArray};
+    use delta_kernel::arrow::datatypes::DataType as ArrowDT;
+
+    let schema = Arc::new(ArrowSchema::new(vec![
+        ArrowField::new("byte_long", ArrowDT::Int64, false),
+        ArrowField::new("int_long", ArrowDT::Int64, false),
+        ArrowField::new("float_double", ArrowDT::Float64, false),
+        ArrowField::new("byte_double", ArrowDT::Float64, false),
+        ArrowField::new("short_double", ArrowDT::Float64, false),
+        ArrowField::new("int_double", ArrowDT::Float64, false),
+        ArrowField::new(
+            "date_timestamp_ntz",
+            ArrowDT::Timestamp(
+                delta_kernel::arrow::datatypes::TimeUnit::Microsecond,
+                None,
+            ),
+            false,
+        ),
+    ]));
+
+    // 2024-09-09T00:00:00 in micros
+    let ts_date = 1725840000000000i64;
+    // 2024-09-09T12:34:56.123456 in micros
+    let ts_full = 1725885296123456i64;
+
+    let expected = RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(Int64Array::from(vec![1, 9223372036854775807i64])),
+            Arc::new(Int64Array::from(vec![2, 9223372036854775807i64])),
+            Arc::new(Float64Array::from(vec![
+                3.4000000953674316,
+                1.234567890123,
+            ])),
+            Arc::new(Float64Array::from(vec![5.0, 1.234567890123])),
+            Arc::new(Float64Array::from(vec![6.0, 1.234567890123])),
+            Arc::new(Float64Array::from(vec![7.0, 1.234567890123])),
+            Arc::new(TimestampMicrosecondArray::from(vec![ts_date, ts_full])),
+        ],
+    )?;
     let select_cols: Option<&[&str]> = Some(&[
         "byte_long",
         "int_long",
@@ -1212,19 +1307,52 @@ fn type_widening_basic() -> Result<(), Box<dyn std::error::Error>> {
         "date_timestamp_ntz",
     ]);
 
-    read_table_data_str("./tests/data/type-widening/", select_cols, None, expected)
+    read_table_data("./tests/data/type-widening/", select_cols, None, expected)
 }
 
 #[test]
 fn type_widening_decimal() -> Result<(), Box<dyn std::error::Error>> {
-    let expected = vec![
-        "+----------------------------+-------------------------------+--------------+---------------+--------------+----------------------+",
-        "| decimal_decimal_same_scale | decimal_decimal_greater_scale | byte_decimal | short_decimal | int_decimal  | long_decimal         |",
-        "+----------------------------+-------------------------------+--------------+---------------+--------------+----------------------+",
-        "| 123.45                     | 67.89000                      | 1.0          | 2.0           | 3.0          | 4.0                  |",
-        "| 12345678901234.56          | 12345678901.23456             | 123.4        | 12345.6       | 1234567890.1 | 123456789012345678.9 |",
-        "+----------------------------+-------------------------------+--------------+---------------+--------------+----------------------+",
-    ];
+    use delta_kernel::arrow::array::Decimal128Array;
+    use delta_kernel::arrow::datatypes::DataType as ArrowDT;
+
+    let schema = Arc::new(ArrowSchema::new(vec![
+        ArrowField::new("decimal_decimal_same_scale", ArrowDT::Decimal128(16, 2), false),
+        ArrowField::new("decimal_decimal_greater_scale", ArrowDT::Decimal128(16, 5), false),
+        ArrowField::new("byte_decimal", ArrowDT::Decimal128(11, 1), false),
+        ArrowField::new("short_decimal", ArrowDT::Decimal128(11, 1), false),
+        ArrowField::new("int_decimal", ArrowDT::Decimal128(20, 1), false),
+        ArrowField::new("long_decimal", ArrowDT::Decimal128(20, 1), false),
+    ]));
+
+    let expected = RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(
+                Decimal128Array::from(vec![12345i128, 1234567890123456i128])
+                    .with_precision_and_scale(16, 2)?,
+            ),
+            Arc::new(
+                Decimal128Array::from(vec![6789000i128, 1234567890123456i128])
+                    .with_precision_and_scale(16, 5)?,
+            ),
+            Arc::new(
+                Decimal128Array::from(vec![10i128, 1234i128])
+                    .with_precision_and_scale(11, 1)?,
+            ),
+            Arc::new(
+                Decimal128Array::from(vec![20i128, 123456i128])
+                    .with_precision_and_scale(11, 1)?,
+            ),
+            Arc::new(
+                Decimal128Array::from(vec![30i128, 12345678901i128])
+                    .with_precision_and_scale(20, 1)?,
+            ),
+            Arc::new(
+                Decimal128Array::from(vec![40i128, 1234567890123456789i128])
+                    .with_precision_and_scale(20, 1)?,
+            ),
+        ],
+    )?;
     let select_cols: Option<&[&str]> = Some(&[
         "decimal_decimal_same_scale",
         "decimal_decimal_greater_scale",
@@ -1233,64 +1361,78 @@ fn type_widening_decimal() -> Result<(), Box<dyn std::error::Error>> {
         "int_decimal",
         "long_decimal",
     ]);
-    read_table_data_str("./tests/data/type-widening/", select_cols, None, expected)
+    read_table_data("./tests/data/type-widening/", select_cols, None, expected)
 }
 
 // Verify that predicates over invalid/missing columns do not cause skipping.
 #[test]
 fn predicate_references_invalid_missing_column() -> Result<(), Box<dyn std::error::Error>> {
-    // Attempted skipping over a logically valid but physically missing column. We should be able to
-    // skip the data file because the missing column is inferred to be all-null.
-    //
-    // WARNING: https://github.com/delta-io/delta-kernel-rs/issues/434 -- currently disabled.
-    //
-    //let expected = vec![
-    //    "+--------+",
-    //    "| chrono |",
-    //    "+--------+",
-    //    "+--------+",
-    //];
-    let columns = &["chrono", "missing"];
-    let expected = vec![
-        "+-------------------------------------------------------------------------------------------+---------+",
-        "| chrono                                                                                    | missing |",
-        "+-------------------------------------------------------------------------------------------+---------+",
-        "| {date32: 1971-01-01, timestamp: 1970-02-01T08:00:00Z, timestamp_ntz: 1970-01-02T00:00:00} |         |",
-        "| {date32: 1971-01-02, timestamp: 1970-02-01T09:00:00Z, timestamp_ntz: 1970-01-02T00:01:00} |         |",
-        "| {date32: 1971-01-03, timestamp: 1970-02-01T10:00:00Z, timestamp_ntz: 1970-01-02T00:02:00} |         |",
-        "| {date32: 1971-01-04, timestamp: 1970-02-01T11:00:00Z, timestamp_ntz: 1970-01-02T00:03:00} |         |",
-        "| {date32: 1971-01-05, timestamp: 1970-02-01T12:00:00Z, timestamp_ntz: 1970-01-02T00:04:00} |         |",
-        "+-------------------------------------------------------------------------------------------+---------+",
-    ];
-    let predicate = column_expr!("missing").lt(Expr::literal(10i64));
-    read_table_data_str(
-        "./tests/data/parquet_row_group_skipping/",
-        Some(columns),
-        Some(predicate),
-        expected,
-    )?;
+    use delta_kernel::arrow::util::pretty::pretty_format_batches;
 
-    // Attempted skipping over an invalid (logically missing) column. Ideally this should throw a
-    // query error, but at a minimum it should not cause incorrect data skipping.
-    let expected = vec![
-        "+-------------------------------------------------------------------------------------------+",
-        "| chrono                                                                                    |",
-        "+-------------------------------------------------------------------------------------------+",
-        "| {date32: 1971-01-01, timestamp: 1970-02-01T08:00:00Z, timestamp_ntz: 1970-01-02T00:00:00} |",
-        "| {date32: 1971-01-02, timestamp: 1970-02-01T09:00:00Z, timestamp_ntz: 1970-01-02T00:01:00} |",
-        "| {date32: 1971-01-03, timestamp: 1970-02-01T10:00:00Z, timestamp_ntz: 1970-01-02T00:02:00} |",
-        "| {date32: 1971-01-04, timestamp: 1970-02-01T11:00:00Z, timestamp_ntz: 1970-01-02T00:03:00} |",
-        "| {date32: 1971-01-05, timestamp: 1970-02-01T12:00:00Z, timestamp_ntz: 1970-01-02T00:04:00} |",
-        "+-------------------------------------------------------------------------------------------+",
-    ];
-    let predicate = column_expr!("invalid").lt(Expr::literal(10));
-    read_table_data_str(
+    let path = std::fs::canonicalize(PathBuf::from(
         "./tests/data/parquet_row_group_skipping/",
-        Some(columns),
-        Some(predicate),
-        expected,
-    )
-    .expect_err("unknown column");
+    ))?;
+    let url = url::Url::from_directory_path(path).unwrap();
+    let engine = test_utils::create_default_engine(&url)?;
+
+    // Attempted skipping over a logically valid but physically missing column.
+    {
+        let columns = &["chrono", "missing"];
+        let predicate = column_expr!("missing").lt(Expr::literal(10i64));
+        let snapshot = Snapshot::builder_for(url.clone()).build(engine.as_ref())?;
+
+        let table_schema = snapshot.schema();
+        let selected_fields = columns
+            .iter()
+            .map(|col| table_schema.field(col).cloned().unwrap());
+        let read_schema = Arc::new(Schema::new_unchecked(selected_fields));
+
+        let scan = snapshot
+            .scan_builder()
+            .with_schema(read_schema)
+            .with_predicate(Arc::new(predicate))
+            .build()?;
+
+        let batches = read_scan(&scan, engine.clone())?;
+        let formatted = pretty_format_batches(&batches).unwrap().to_string();
+        let mut actual_lines: Vec<&str> = formatted.trim().lines().collect();
+        actual_lines.sort();
+
+        let expected = vec![
+            "+-------------------------------------------------------------------------------------------+---------+",
+            "| chrono                                                                                    | missing |",
+            "+-------------------------------------------------------------------------------------------+---------+",
+            "| {date32: 1971-01-01, timestamp: 1970-02-01T08:00:00Z, timestamp_ntz: 1970-01-02T00:00:00} |         |",
+            "| {date32: 1971-01-02, timestamp: 1970-02-01T09:00:00Z, timestamp_ntz: 1970-01-02T00:01:00} |         |",
+            "| {date32: 1971-01-03, timestamp: 1970-02-01T10:00:00Z, timestamp_ntz: 1970-01-02T00:02:00} |         |",
+            "| {date32: 1971-01-04, timestamp: 1970-02-01T11:00:00Z, timestamp_ntz: 1970-01-02T00:03:00} |         |",
+            "| {date32: 1971-01-05, timestamp: 1970-02-01T12:00:00Z, timestamp_ntz: 1970-01-02T00:04:00} |         |",
+            "+-------------------------------------------------------------------------------------------+---------+",
+        ];
+        let mut expected_sorted = expected.to_vec();
+        expected_sorted.sort();
+        assert_eq!(expected_sorted, actual_lines);
+    }
+
+    // Attempted skipping over an invalid (logically missing) column.
+    {
+        let columns = &["chrono"];
+        let predicate = column_expr!("invalid").lt(Expr::literal(10));
+        let snapshot = Snapshot::builder_for(url.clone()).build(engine.as_ref())?;
+
+        let table_schema = snapshot.schema();
+        let selected_fields = columns
+            .iter()
+            .map(|col| table_schema.field(col).cloned().unwrap());
+        let read_schema = Arc::new(Schema::new_unchecked(selected_fields));
+
+        let result = snapshot
+            .scan_builder()
+            .with_schema(read_schema)
+            .with_predicate(Arc::new(predicate))
+            .build();
+        result.expect_err("unknown column");
+    }
     Ok(())
 }
 
@@ -1300,45 +1442,97 @@ fn predicate_references_invalid_missing_column() -> Result<(), Box<dyn std::erro
 #[cfg(not(windows))]
 #[test]
 fn timestamp_partitioned_table() -> Result<(), Box<dyn std::error::Error>> {
-    let expected = vec![
-        "+----+-----+---+----------------------+",
-        "| id | x   | s | time                 |",
-        "+----+-----+---+----------------------+",
-        "| 1  | 0.5 |   | 1971-07-22T03:06:40Z |",
-        "+----+-----+---+----------------------+",
-    ];
+    use delta_kernel::arrow::array::{Float64Array, Int64Array, StringArray, TimestampMicrosecondArray};
+    use delta_kernel::arrow::datatypes::DataType as ArrowDT;
+
+    let schema = Arc::new(ArrowSchema::new(vec![
+        ArrowField::new("id", ArrowDT::Int64, false),
+        ArrowField::new("x", ArrowDT::Float64, false),
+        ArrowField::new("s", ArrowDT::Utf8, true),
+        ArrowField::new(
+            "time",
+            ArrowDT::Timestamp(
+                delta_kernel::arrow::datatypes::TimeUnit::Microsecond,
+                Some("UTC".into()),
+            ),
+            false,
+        ),
+    ]));
+    // 1971-07-22T03:06:40Z in micros
+    let ts_micros = 48826000000000i64;
+    let expected = RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(Int64Array::from(vec![1])),
+            Arc::new(Float64Array::from(vec![0.5])),
+            Arc::new(StringArray::from(vec![None::<&str>])),
+            Arc::new(
+                TimestampMicrosecondArray::from(vec![ts_micros]).with_timezone("UTC"),
+            ),
+        ],
+    )?;
     let test_name = "timestamp-partitioned-table";
     let test_dir = load_test_data("./tests/data", test_name).unwrap();
     let test_path = test_dir.path().join(test_name);
-    read_table_data_str(test_path.to_str().unwrap(), None, None, expected)
+    read_table_data(test_path.to_str().unwrap(), None, None, expected)
 }
 
 #[test]
 fn compacted_log_files_table() -> Result<(), Box<dyn std::error::Error>> {
-    let expected = vec![
-        "+----+--------------------+",
-        "| id | comment            |",
-        "+----+--------------------+",
-        "| 0  | new                |",
-        "| 1  | after-large-delete |",
-        "| 2  |                    |",
-        "| 10 | merge1-insert      |",
-        "| 12 | merge2-insert      |",
-        "+----+--------------------+",
-    ];
+    let expected = generate_batch(vec![
+        ("id", vec![0i32, 1, 2, 10, 12].into_array()),
+        (
+            "comment",
+            vec![
+                Some("new"),
+                Some("after-large-delete"),
+                Some(""),
+                Some("merge1-insert"),
+                Some("merge2-insert"),
+            ]
+            .into_array(),
+        ),
+    ])?;
     let test_name = "compacted-log-files-table";
     let test_dir = load_test_data("./tests/data", test_name).unwrap();
     let test_path = test_dir.path().join(test_name);
-    read_table_data_str(test_path.to_str().unwrap(), None, None, expected)
+    read_table_data(test_path.to_str().unwrap(), None, None, expected)
 }
 
 #[test]
 fn unshredded_variant_table() -> Result<(), Box<dyn std::error::Error>> {
-    let expected = include!("data/unshredded-variant.expected.in");
+    use delta_kernel::arrow::util::pretty::pretty_format_batches;
+
+    let expected_lines: Vec<&str> = include!("data/unshredded-variant.expected.in");
     let test_name = "unshredded-variant";
     let test_dir = load_test_data("./tests/data", test_name).unwrap();
     let test_path = test_dir.path().join(test_name);
-    read_table_data_str(test_path.to_str().unwrap(), None, None, expected)
+
+    let path = std::fs::canonicalize(PathBuf::from(test_path))?;
+    let url = url::Url::from_directory_path(path).unwrap();
+    let engine = test_utils::create_default_engine(&url)?;
+
+    let snapshot = Snapshot::builder_for(url).build(engine.as_ref())?;
+    let scan = snapshot.scan_builder().build()?;
+    let batches = read_scan(&scan, engine)?;
+
+    let formatted = pretty_format_batches(&batches).unwrap().to_string();
+    let mut actual_lines: Vec<&str> = formatted.trim().lines().collect();
+    let num_lines = actual_lines.len();
+    if num_lines > 3 {
+        actual_lines.as_mut_slice()[2..num_lines - 1].sort_unstable();
+    }
+    let mut expected_sorted = expected_lines;
+    let num_expected = expected_sorted.len();
+    if num_expected > 3 {
+        expected_sorted.as_mut_slice()[2..num_expected - 1].sort_unstable();
+    }
+    assert_eq!(
+        expected_sorted, actual_lines,
+        "\n\nexpected:\n\n{:#?}\nactual:\n\n{:#?}\n\n",
+        expected_sorted, actual_lines
+    );
+    Ok(())
 }
 
 #[tokio::test]

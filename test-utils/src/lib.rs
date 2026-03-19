@@ -5,11 +5,14 @@ use std::sync::Arc;
 
 use delta_kernel::actions::get_log_add_schema;
 use delta_kernel::arrow::array::{
-    Array, ArrayRef, BooleanArray, Float64Array, Int32Array, Int64Array, MapArray, RecordBatch,
-    StringArray, StructArray,
+    Array, ArrayRef, BooleanArray, Float64Array, Int16Array, Int32Array, Int64Array, MapArray,
+    RecordBatch, StringArray, StructArray,
 };
 use delta_kernel::arrow::buffer::OffsetBuffer;
-use delta_kernel::arrow::datatypes::{DataType as ArrowDataType, Field, Schema as ArrowSchema};
+use delta_kernel::arrow::compute::{concat_batches, lexsort_to_indices, take, SortColumn};
+use delta_kernel::arrow::datatypes::{
+    DataType as ArrowDataType, Field, Schema as ArrowSchema, SchemaRef as ArrowSchemaRef,
+};
 use delta_kernel::arrow::error::ArrowError;
 use delta_kernel::arrow::util::pretty::pretty_format_batches;
 use delta_kernel::committer::FileSystemCommitter;
@@ -182,6 +185,135 @@ impl IntoArray for Vec<&'static str> {
     fn into_array(self) -> ArrayRef {
         Arc::new(StringArray::from(self))
     }
+}
+
+impl IntoArray for Vec<Option<i32>> {
+    fn into_array(self) -> ArrayRef {
+        Arc::new(Int32Array::from(self))
+    }
+}
+
+impl IntoArray for Vec<Option<i64>> {
+    fn into_array(self) -> ArrayRef {
+        Arc::new(Int64Array::from(self))
+    }
+}
+
+impl IntoArray for Vec<Option<bool>> {
+    fn into_array(self) -> ArrayRef {
+        Arc::new(BooleanArray::from(self))
+    }
+}
+
+impl IntoArray for Vec<Option<&str>> {
+    fn into_array(self) -> ArrayRef {
+        Arc::new(StringArray::from(self))
+    }
+}
+
+impl IntoArray for Vec<f64> {
+    fn into_array(self) -> ArrayRef {
+        Arc::new(Float64Array::from(self))
+    }
+}
+
+impl IntoArray for Vec<Option<f64>> {
+    fn into_array(self) -> ArrayRef {
+        Arc::new(Float64Array::from(self))
+    }
+}
+
+impl IntoArray for Vec<i16> {
+    fn into_array(self) -> ArrayRef {
+        Arc::new(Int16Array::from(self))
+    }
+}
+
+impl IntoArray for Vec<Option<i16>> {
+    fn into_array(self) -> ArrayRef {
+        Arc::new(Int16Array::from(self))
+    }
+}
+
+/// Sort a [`RecordBatch`] by all sortable columns (skips structs, maps, and non-primitive lists).
+///
+/// Returns the batch unchanged if it has fewer than 2 rows.
+pub fn sort_record_batch(batch: RecordBatch) -> RecordBatch {
+    if batch.num_rows() < 2 {
+        return batch;
+    }
+    let mut sort_columns = vec![];
+    for col in batch.columns() {
+        match col.data_type() {
+            ArrowDataType::Struct(_) | ArrowDataType::Map(_, _) => {
+                // can't sort by structs or maps
+            }
+            ArrowDataType::List(list_field) => {
+                let list_dt = list_field.data_type();
+                if list_dt.is_primitive() {
+                    sort_columns.push(SortColumn {
+                        values: col.clone(),
+                        options: None,
+                    })
+                }
+            }
+            _ => sort_columns.push(SortColumn {
+                values: col.clone(),
+                options: None,
+            }),
+        }
+    }
+    let indices = lexsort_to_indices(&sort_columns, None).unwrap();
+    let columns = batch
+        .columns()
+        .iter()
+        .map(|c| take(c, &indices, None).unwrap())
+        .collect();
+    RecordBatch::try_new(batch.schema(), columns).unwrap()
+}
+
+/// Convert all top-level fields in a [`RecordBatch`] schema to nullable.
+///
+/// This handles schema nullability mismatches between constructed test data (where fields
+/// default to non-nullable) and scan results (where Delta table metadata declares columns
+/// as nullable).
+pub fn make_top_level_fields_nullable(batch: &RecordBatch) -> RecordBatch {
+    let schema = Arc::new(ArrowSchema::new(
+        batch
+            .schema()
+            .fields()
+            .iter()
+            .map(|f| Field::new(f.name(), f.data_type().clone(), true))
+            .collect::<Vec<_>>(),
+    ));
+    RecordBatch::try_new(schema, batch.columns().to_vec()).unwrap()
+}
+
+/// Assert that the `actual` batches contain the same sorted rows as `expected`.
+///
+/// Concatenates `actual` batches, makes top-level fields nullable in both expected and actual
+/// (to handle schema nullability mismatches), sorts both by all sortable columns, then
+/// compares with `assert_eq!`. For an empty expected batch (0 rows), asserts total actual
+/// rows is 0.
+pub fn assert_batches_eq(expected: &RecordBatch, actual: &[RecordBatch]) {
+    if expected.num_rows() == 0 {
+        let total_rows: usize = actual.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(
+            total_rows, 0,
+            "Expected 0 rows but got {total_rows} rows in actual batches"
+        );
+        return;
+    }
+    assert!(
+        !actual.is_empty(),
+        "Expected {} rows but got no actual batches",
+        expected.num_rows()
+    );
+    let schema: ArrowSchemaRef = make_top_level_fields_nullable(&actual[0]).schema();
+    let actual_concat = concat_batches(&schema, actual).unwrap();
+    let actual_sorted = sort_record_batch(make_top_level_fields_nullable(&actual_concat));
+    let expected_sorted = sort_record_batch(make_top_level_fields_nullable(expected));
+    assert_eq!(expected_sorted, actual_sorted);
 }
 
 /// Generate a record batch from an iterator over (name, array) pairs. Each pair specifies a column
