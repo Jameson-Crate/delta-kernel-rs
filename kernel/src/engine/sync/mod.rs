@@ -7,10 +7,11 @@ use itertools::Itertools;
 use tracing::debug;
 
 use super::arrow_expression::ArrowEvaluationHandler;
+use super::parse_expression::LiteralParsingHandler;
 use crate::engine::arrow_data::ArrowEngineData;
 use crate::{
     DeltaResult, Engine, Error, EvaluationHandler, FileDataReadResultIterator, FileMeta,
-    JsonHandler, ParquetHandler, PredicateRef, SchemaRef, StorageHandler,
+    JsonHandler, ParquetHandler, ParsingHandler, PredicateRef, SchemaRef, StorageHandler,
 };
 
 pub(crate) mod json;
@@ -25,6 +26,7 @@ pub(crate) struct SyncEngine {
     json_handler: Arc<json::SyncJsonHandler>,
     parquet_handler: Arc<parquet::SyncParquetHandler>,
     evaluation_handler: Arc<ArrowEvaluationHandler>,
+    parsing_handler: Arc<LiteralParsingHandler>,
 }
 
 impl SyncEngine {
@@ -34,6 +36,7 @@ impl SyncEngine {
             json_handler: Arc::new(json::SyncJsonHandler {}),
             parquet_handler: Arc::new(parquet::SyncParquetHandler {}),
             evaluation_handler: Arc::new(ArrowEvaluationHandler {}),
+            parsing_handler: Arc::new(LiteralParsingHandler::new()),
         }
     }
 }
@@ -54,6 +57,10 @@ impl Engine for SyncEngine {
 
     fn json_handler(&self) -> Arc<dyn JsonHandler> {
         self.json_handler.clone()
+    }
+
+    fn parsing_handler(&self) -> Arc<dyn ParsingHandler> {
+        self.parsing_handler.clone()
     }
 }
 

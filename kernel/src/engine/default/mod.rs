@@ -19,11 +19,13 @@ use self::parquet::DefaultParquetHandler;
 use super::arrow_conversion::TryFromArrow as _;
 use super::arrow_data::ArrowEngineData;
 use super::arrow_expression::ArrowEvaluationHandler;
+use super::parse_expression::LiteralParsingHandler;
 use crate::object_store::DynObjectStore;
 use crate::schema::Schema;
 use crate::transaction::WriteContext;
 use crate::{
-    DeltaResult, Engine, EngineData, EvaluationHandler, JsonHandler, ParquetHandler, StorageHandler,
+    DeltaResult, Engine, EngineData, EvaluationHandler, JsonHandler, ParquetHandler,
+    ParsingHandler, StorageHandler,
 };
 
 pub mod executor;
@@ -148,6 +150,7 @@ pub struct DefaultEngine<E: TaskExecutor> {
     json: Arc<DefaultJsonHandler<E>>,
     parquet: Arc<DefaultParquetHandler<E>>,
     evaluation: Arc<ArrowEvaluationHandler>,
+    parsing: Arc<LiteralParsingHandler>,
 }
 
 /// Builder for creating [`DefaultEngine`] instances.
@@ -235,6 +238,7 @@ impl<E: TaskExecutor> DefaultEngine<E> {
             object_store,
             task_executor,
             evaluation: Arc::new(ArrowEvaluationHandler {}),
+            parsing: Arc::new(LiteralParsingHandler::new()),
         }
     }
 
@@ -316,6 +320,10 @@ impl<E: TaskExecutor> Engine for DefaultEngine<E> {
 
     fn parquet_handler(&self) -> Arc<dyn ParquetHandler> {
         self.parquet.clone()
+    }
+
+    fn parsing_handler(&self) -> Arc<dyn ParsingHandler> {
+        self.parsing.clone()
     }
 }
 

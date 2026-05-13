@@ -1094,6 +1094,10 @@ mod tests {
         fn storage_handler(&self) -> Arc<dyn StorageHandler> {
             unimplemented!()
         }
+
+        fn parsing_handler(&self) -> Arc<dyn crate::ParsingHandler> {
+            unimplemented!()
+        }
     }
 
     fn create_string_map_builder(

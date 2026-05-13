@@ -256,7 +256,7 @@ jobs:
           cmake ..
           make
           make test
-      - name: build and run visit-expression test
+      - name: build and run visit-expression   test
         run: |
           pushd ffi/examples/visit-expression
           mkdir build

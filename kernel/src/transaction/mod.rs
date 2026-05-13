@@ -57,6 +57,8 @@ pub(crate) mod data_layout;
 
 pub(crate) mod alter_table;
 pub use alter_table::AlterTableTransaction;
+pub(crate) mod column_defaults;
+pub use column_defaults::DefaultColumn;
 mod commit_info;
 mod domain_metadata;
 pub(crate) mod schema_evolution;
@@ -267,6 +269,11 @@ pub struct Transaction<S = ExistingTable> {
     physical_clustering_columns: Option<Vec<ColumnName>>,
     // See `shared_write_state()` method.
     shared_write_state: OnceLock<Arc<SharedWriteState>>,
+    // Map of top-level logical column name -> parsed column default. Populated at transaction
+    // construction by reading each top-level field's `CURRENT_DEFAULT` metadata and attempting to
+    // parse it via the engine's `ParsingHandler`. Defaults that fail to parse are recorded with
+    // `parsed_expr: None` so engines can fall back to the raw SQL. Empty for CREATE TABLE.
+    column_defaults: HashMap<String, DefaultColumn>,
     // PhantomData marker for transaction state (ExistingTable or CreateTable).
     // Zero-sized; only affects the type system.
     _state: PhantomData<S>,
@@ -774,6 +781,22 @@ impl<S> Transaction<S> {
     /// [`stats_schema`]: Transaction::stats_schema
     pub fn add_files_schema(&self) -> &'static SchemaRef {
         &BASE_ADD_FILES_SCHEMA
+    }
+
+    /// Returns the column defaults declared in this table's schema, keyed by top-level logical
+    /// column name.
+    ///
+    /// Each entry contains the field's data type, the raw SQL stored under the `CURRENT_DEFAULT`
+    /// field-metadata key, and -- when the engine's [`ParsingHandler`] could parse it -- the
+    /// resulting [`Expression`]. SQL the parser cannot handle is preserved as
+    /// `parsed_expr: None` so the engine can apply its own parser.
+    ///
+    /// Defaults on nested fields are not surfaced because the Delta protocol does not allow them.
+    /// CREATE TABLE transactions currently return an empty map.
+    ///
+    /// [`ParsingHandler`]: crate::ParsingHandler
+    pub fn column_defaults(&self) -> &HashMap<String, DefaultColumn> {
+        &self.column_defaults
     }
 }
 
@@ -2521,6 +2544,88 @@ mod tests {
         assert!(
             result.is_ok(),
             "Stats validation should be skipped without clustering, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_column_defaults_populated_from_schema_metadata() {
+        let storage = Arc::new(InMemory::new());
+        let table_root = url::Url::parse("memory:///").unwrap();
+        let engine = crate::engine::default::DefaultEngineBuilder::new(storage.clone()).build();
+
+        // CURRENT_DEFAULT lives in the field metadata of the table's schema JSON. We embed
+        // one literal integer default, one literal string default, and one non-literal
+        // (which the LiteralParsingHandler cannot parse).
+        let schema_json = "{\"type\":\"struct\",\"fields\":[\
+            {\"name\":\"a\",\"type\":\"integer\",\"nullable\":true,\"metadata\":{\"CURRENT_DEFAULT\":\"42\"}},\
+            {\"name\":\"b\",\"type\":\"string\",\"nullable\":true,\"metadata\":{\"CURRENT_DEFAULT\":\"'hi'\"}},\
+            {\"name\":\"c\",\"type\":\"timestamp\",\"nullable\":true,\"metadata\":{\"CURRENT_DEFAULT\":\"CURRENT_TIMESTAMP()\"}},\
+            {\"name\":\"d\",\"type\":\"integer\",\"nullable\":true,\"metadata\":{}}\
+        ]}";
+        let metadata = format!(
+            r#"{{"metaData":{{"id":"test-id","format":{{"provider":"parquet","options":{{}}}},"schemaString":{},"partitionColumns":[],"configuration":{{}},"createdTime":1234567890}}}}"#,
+            serde_json::to_string(schema_json).unwrap(),
+        );
+        let actions = [
+            r#"{"commitInfo":{"timestamp":12345678900}}"#,
+            r#"{"protocol":{"minReaderVersion":1,"minWriterVersion":2}}"#,
+            &metadata,
+        ]
+        .join("\n");
+
+        let commit_path = Path::from("_delta_log/00000000000000000000.json");
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(storage.put(&commit_path, actions.into()))
+            .unwrap();
+
+        let snapshot = Snapshot::builder_for(table_root).build(&engine).unwrap();
+        let txn = snapshot
+            .transaction(Box::new(FileSystemCommitter::new()), &engine)
+            .unwrap();
+
+        let defaults = txn.column_defaults();
+        assert_eq!(defaults.len(), 3, "fields d has no CURRENT_DEFAULT");
+
+        let a = defaults.get("a").expect("field a has a default");
+        assert_eq!(a.data_type, DataType::INTEGER);
+        assert_eq!(a.sql, "42");
+        assert_eq!(
+            a.parsed_expr,
+            Some(Expression::literal(crate::expressions::Scalar::Integer(42)))
+        );
+
+        let b = defaults.get("b").expect("field b has a default");
+        assert_eq!(b.sql, "'hi'");
+        assert_eq!(
+            b.parsed_expr,
+            Some(Expression::literal(crate::expressions::Scalar::String(
+                "hi".into()
+            )))
+        );
+
+        let c = defaults.get("c").expect("field c has a default");
+        assert_eq!(c.sql, "CURRENT_TIMESTAMP()");
+        assert!(c.parsed_expr.is_none(), "non-literal SQL is not parsed");
+    }
+
+    #[test]
+    fn test_column_defaults_empty_for_create_table() {
+        let storage = Arc::new(InMemory::new());
+        let engine = crate::engine::default::DefaultEngineBuilder::new(storage).build();
+
+        let schema = Arc::new(crate::schema::StructType::new_unchecked(vec![
+            crate::schema::StructField::nullable("id", crate::schema::DataType::INTEGER)
+                .with_metadata([(
+                    column_defaults::COLUMN_DEFAULT_METADATA_KEY,
+                    crate::schema::MetadataValue::String("0".into()),
+                )]),
+        ]));
+        let txn = create_table("memory:///", schema, "test-engine")
+            .build(&engine, Box::new(FileSystemCommitter::new()))
+            .unwrap();
+        assert!(
+            txn.column_defaults().is_empty(),
+            "CREATE TABLE does not surface defaults yet"
         );
     }
 

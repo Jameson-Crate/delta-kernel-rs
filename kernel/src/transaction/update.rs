@@ -73,6 +73,11 @@ impl Transaction {
 
         let effective_table_config = read_snapshot.table_configuration().clone();
 
+        let column_defaults = super::column_defaults::extract_column_defaults(
+            &effective_table_config.logical_schema(),
+            engine,
+        );
+
         Ok(Transaction {
             span,
             read_snapshot_opt: Some(read_snapshot),
@@ -95,6 +100,7 @@ impl Transaction {
             dv_matched_files: vec![],
             physical_clustering_columns: clustering_columns,
             shared_write_state: OnceLock::new(),
+            column_defaults,
             _state: PhantomData,
         })
     }

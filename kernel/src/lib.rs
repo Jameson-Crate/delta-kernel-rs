@@ -929,6 +929,27 @@ pub trait ParquetHandler: AsAny {
     fn read_parquet_footer(&self, file: &FileMeta) -> DeltaResult<ParquetFooter>;
 }
 
+/// A handler that parses SQL strings into kernel [`Expression`]s.
+///
+/// Delta tables store several pieces of metadata as SQL strings: column defaults, generated
+/// column expressions (`delta.generationExpression`), and check constraints
+/// (`delta.constraints.*`). Connectors implement this trait to plug in a SQL parser of their
+/// choosing so kernel can convert those strings into typed kernel expressions.
+pub trait ParsingHandler: AsAny {
+    /// Parse `sql` into an [`Expression`] whose result has type `output_type`.
+    ///
+    /// `output_type` is the expected type of the parsed expression -- for example, the declared
+    /// type of a column whose default value is being parsed. Implementations should use it to
+    /// disambiguate untyped literals (e.g. `42` may be `Int`, `Long`, `Short`, etc.) and to
+    /// validate that the parsed expression is type-compatible.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `sql` cannot be parsed, if it references constructs the
+    /// implementation does not support, or if the result is incompatible with `output_type`.
+    fn parse_sql(&self, sql: &str, output_type: &DataType) -> DeltaResult<Expression>;
+}
+
 /// The `Engine` trait encapsulates all the functionality an engine or connector needs to provide
 /// to the Delta Kernel in order to read the Delta table.
 ///
@@ -946,6 +967,9 @@ pub trait Engine: AsAny {
 
     /// Get the connector provided [`ParquetHandler`].
     fn parquet_handler(&self) -> Arc<dyn ParquetHandler>;
+
+    /// Get the connector provided [`ParsingHandler`].
+    fn parsing_handler(&self) -> Arc<dyn ParsingHandler>;
 }
 
 // we have an 'internal' feature flag: default-engine-base, which is actually just the shared

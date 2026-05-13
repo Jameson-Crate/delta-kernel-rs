@@ -31,6 +31,7 @@
 // and for tests. Also allow dead_code since these are used by integration tests.
 #![allow(unreachable_pub, dead_code)]
 
+use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::sync::OnceLock;
 
@@ -172,6 +173,9 @@ impl CreateTableTransaction {
             dv_matched_files: vec![],
             physical_clustering_columns: clustering_columns,
             shared_write_state: OnceLock::new(),
+            // CREATE TABLE does not currently surface column defaults; engines that need them
+            // can re-read field metadata directly until this path is wired up.
+            column_defaults: HashMap::new(),
             _state: PhantomData,
         })
     }

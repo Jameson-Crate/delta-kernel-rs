@@ -1465,6 +1465,10 @@ impl Engine for EmptyParquetEngine {
     fn storage_handler(&self) -> Arc<dyn StorageHandler> {
         self.0.storage_handler()
     }
+
+    fn parsing_handler(&self) -> Arc<dyn crate::ParsingHandler> {
+        self.0.parsing_handler()
+    }
 }
 
 /// When a file's Add action stats report `numRecords > 0` and the parquet handler returns an empty

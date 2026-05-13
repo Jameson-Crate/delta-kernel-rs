@@ -678,6 +678,9 @@ impl Engine for FailingEngine {
     fn parquet_handler(&self) -> Arc<dyn delta_kernel::ParquetHandler> {
         unimplemented!()
     }
+    fn parsing_handler(&self) -> Arc<dyn delta_kernel::ParsingHandler> {
+        unimplemented!()
+    }
 }
 
 #[tokio::test]

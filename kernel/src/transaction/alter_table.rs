@@ -6,6 +6,7 @@
 
 #![allow(unreachable_pub)]
 
+use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::sync::OnceLock;
 
@@ -71,6 +72,9 @@ impl AlterTableTransaction {
             is_blind_append: false,
             dv_matched_files: vec![],
             physical_clustering_columns: None,
+            // ALTER TABLE does not currently surface column defaults (constructor has no Engine
+            // to invoke the parser with). Engines that need them can read field metadata.
+            column_defaults: HashMap::new(),
             _state: PhantomData,
         })
     }
