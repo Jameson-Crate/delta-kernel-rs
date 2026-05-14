@@ -30,7 +30,9 @@ use crate::scan::log_replay::{
     PARTITION_VALUES_PARSED_NAME, STATS_PARSED_NAME, TAGS_NAME,
 };
 use crate::scan::scan_row_schema;
-use crate::schema::{ArrayType, MapType, SchemaRef, StructField, StructType, StructTypeBuilder};
+use crate::schema::{
+    ArrayType, ColumnDefault, MapType, SchemaRef, StructField, StructType, StructTypeBuilder,
+};
 use crate::snapshot::{Snapshot, SnapshotRef};
 use crate::table_configuration::TableConfiguration;
 use crate::table_features::TableFeature;
@@ -774,6 +776,26 @@ impl<S> Transaction<S> {
     /// [`stats_schema`]: Transaction::stats_schema
     pub fn add_files_schema(&self) -> &'static SchemaRef {
         &BASE_ADD_FILES_SCHEMA
+    }
+
+    /// Returns the per-column defaults declared on this transaction's
+    /// top-level columns, keyed by column name.
+    ///
+    /// Only top-level fields are inspected -- the Delta protocol does not
+    /// permit defaults on nested fields. Columns without a `CURRENT_DEFAULT`
+    /// metadata annotation are simply omitted from the map.
+    ///
+    /// Each value is a [`ColumnDefault`] carrying the raw SQL, the column's
+    /// `DataType`, and the best-effort parse from
+    /// [`crate::expressions::parse_sql_literal`]. Defaults whose SQL the
+    /// kernel cannot parse round-trip with `parsed: None` rather than being
+    /// dropped, so callers with their own SQL parser can still recover them.
+    pub fn column_defaults(&self) -> HashMap<String, ColumnDefault> {
+        self.effective_table_config
+            .logical_schema()
+            .fields()
+            .filter_map(|f| f.column_default().map(|d| (f.name.clone(), d)))
+            .collect()
     }
 }
 
@@ -2693,6 +2715,82 @@ mod tests {
             "CommitMetadata.in_commit_timestamp should be the computed ICT (prev_ict + 1), \
              not the wall-clock time"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn column_defaults_only_surfaces_top_level_with_metadata() -> DeltaResult<()> {
+        use crate::expressions::Expression;
+        use crate::schema::{ColumnMetadataKey, DataType, MetadataValue};
+
+        let with_default = |field: StructField, sql: &str| {
+            field.add_metadata([(
+                ColumnMetadataKey::CurrentDefault.as_ref(),
+                MetadataValue::String(sql.into()),
+            )])
+        };
+
+        // - `a`: parseable literal default
+        // - `b`: un-parseable default (function call); should still appear in the map with `parsed:
+        //   None`
+        // - `c`: no default
+        // - `nested`: a struct field whose inner field carries a default; that nested default must
+        //   NOT be surfaced
+        let nested = StructType::new_unchecked(vec![with_default(
+            StructField::nullable("inner", DataType::INTEGER),
+            "99",
+        )]);
+        let schema = Arc::new(StructType::new_unchecked(vec![
+            with_default(StructField::nullable("a", DataType::INTEGER), "42"),
+            with_default(
+                StructField::nullable("b", DataType::TIMESTAMP),
+                "CURRENT_TIMESTAMP()",
+            ),
+            StructField::nullable("c", DataType::STRING),
+            StructField::nullable("nested", DataType::Struct(Box::new(nested))),
+        ]));
+
+        let engine = SyncEngine::new_with_store(Arc::new(InMemory::new()));
+        let txn = create_table("memory:///", schema, "test-engine")
+            .build(&engine, Box::new(FileSystemCommitter::new()))?;
+
+        let defaults = txn.column_defaults();
+        assert_eq!(
+            defaults.len(),
+            2,
+            "only `a` and `b` should appear: {defaults:?}"
+        );
+        assert!(!defaults.contains_key("c"));
+        assert!(!defaults.contains_key("nested"));
+        assert!(!defaults.contains_key("inner"));
+
+        let a = defaults.get("a").expect("a has a default");
+        assert_eq!(a.sql, "42");
+        assert_eq!(a.data_type, DataType::INTEGER);
+        assert_eq!(a.parsed, Some(Expression::literal(Scalar::Integer(42))));
+
+        let b = defaults.get("b").expect("b has a default");
+        assert_eq!(b.sql, "CURRENT_TIMESTAMP()");
+        assert_eq!(b.data_type, DataType::TIMESTAMP);
+        assert_eq!(b.parsed, None);
+
+        Ok(())
+    }
+
+    #[test]
+    fn column_defaults_empty_when_no_columns_have_defaults() -> DeltaResult<()> {
+        use crate::schema::DataType;
+
+        let schema = Arc::new(StructType::new_unchecked(vec![
+            StructField::nullable("a", DataType::INTEGER),
+            StructField::nullable("b", DataType::STRING),
+        ]));
+
+        let engine = SyncEngine::new_with_store(Arc::new(InMemory::new()));
+        let txn = create_table("memory:///", schema, "test-engine")
+            .build(&engine, Box::new(FileSystemCommitter::new()))?;
+
+        assert!(txn.column_defaults().is_empty());
         Ok(())
     }
 }

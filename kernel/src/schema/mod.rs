@@ -24,6 +24,7 @@ use crate::transforms::{transform_output_type, SchemaTransform};
 use crate::utils::require;
 use crate::{DeltaResult, Error};
 
+mod column_default;
 pub(crate) mod compare;
 #[cfg(feature = "schema-diff")]
 pub(crate) mod diff;
@@ -34,6 +35,8 @@ pub mod derive_macro_utils;
 pub(crate) mod derive_macro_utils;
 pub(crate) mod validation;
 pub(crate) mod variant_utils;
+
+pub use column_default::ColumnDefault;
 
 pub type Schema = StructType;
 pub type SchemaRef = Arc<StructType>;
@@ -122,6 +125,10 @@ pub enum ColumnMetadataKey {
     /// }
     /// ```
     ColumnMappingNestedIds,
+    /// The raw SQL expression supplying a column's default value for newly
+    /// inserted rows. Stored as `MetadataValue::String`. Top-level columns
+    /// only; the Delta protocol does not permit defaults on nested fields.
+    CurrentDefault,
     ParquetFieldId,
     ParquetFieldNestedIds,
     GenerationExpression,
@@ -140,6 +147,11 @@ impl AsRef<str> for ColumnMetadataKey {
             Self::ColumnMappingId => "delta.columnMapping.id",
             Self::ColumnMappingPhysicalName => "delta.columnMapping.physicalName",
             Self::ColumnMappingNestedIds => "delta.columnMapping.nested.ids",
+            // ANSI SQL convention; the Delta protocol stores column defaults
+            // under the bare `CURRENT_DEFAULT` key (no `delta.` prefix). The
+            // sibling `EXISTS_DEFAULT` key is intentionally not modeled here
+            // yet -- a follow-up will add it alongside this one.
+            Self::CurrentDefault => "CURRENT_DEFAULT",
             // "parquet.field.id" is not defined by the Delta protocol, but follows the convention
             // established by delta-spark and other Delta ecosystem implementations for storing
             // Parquet field IDs in StructField metadata.
@@ -380,6 +392,25 @@ impl StructField {
     pub fn column_mapping_id(&self) -> Option<i64> {
         match self.get_config_value(&ColumnMetadataKey::ColumnMappingId)? {
             MetadataValue::Number(n) => Some(*n),
+            _ => None,
+        }
+    }
+
+    /// Returns this field's column default, parsed from the `CURRENT_DEFAULT`
+    /// metadata key. Returns `None` if the metadata is absent or stored under
+    /// a non-string `MetadataValue` variant (defensive: defaults are always
+    /// SQL strings per the protocol).
+    ///
+    /// The returned [`ColumnDefault`] always includes the raw SQL and the
+    /// column's `DataType`. Its `parsed` field is `Some` only when the
+    /// kernel's built-in literal parser succeeds on the SQL; non-literal
+    /// expressions (e.g. function calls) round-trip as `parsed: None`
+    /// without surfacing an error.
+    pub fn column_default(&self) -> Option<ColumnDefault> {
+        match self.get_config_value(&ColumnMetadataKey::CurrentDefault)? {
+            MetadataValue::String(sql) => {
+                Some(ColumnDefault::new(sql.clone(), self.data_type.clone()))
+            }
             _ => None,
         }
     }
