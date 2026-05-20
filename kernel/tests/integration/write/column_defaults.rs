@@ -36,16 +36,15 @@ use test_utils::{load_and_begin_transaction, setup_test_tables, test_read};
 // Helpers -- none of these mention specific column names or default values.
 // ============================================================================
 
-/// Pull the literal `Scalar` out of a `ColumnDefault`. The kernel's literal
-/// parser succeeds for every default used by these tests; a real connector
-/// would fall back to its own SQL parser (via `col_default.sql`) when
-/// `parsed` is `None`.
-fn scalar_for(col_default: &ColumnDefault) -> Scalar {
-    match col_default.parsed.as_ref() {
-        Some(Expression::Literal(scalar)) => scalar.clone(),
-        Some(other) => panic!("expected literal default, got {other:?}"),
-        None => panic!("kernel could not parse default sql {:?}", col_default.sql),
-    }
+/// Resolve a `ColumnDefault` to a `Scalar` by asking the kernel to evaluate
+/// it. The kernel's literal parser succeeds for every default used by these
+/// tests; a real connector would fall back to its own SQL parser (via
+/// `col_default.sql`) when `evaluate` returns an error indicating the kernel
+/// could not parse the SQL.
+fn scalar_for(engine: &dyn Engine, col_default: &ColumnDefault) -> Scalar {
+    col_default
+        .evaluate(engine)
+        .expect("kernel could not evaluate column default")
 }
 
 /// For a column whose cells are sentinel-aware (`None` = use the default),
@@ -104,7 +103,7 @@ fn project_with_defaults(
             if input_schema.field(&field.name).is_some() {
                 Expression::from(ColumnName::new([field.name.as_str()]))
             } else if let Some(default) = defaults.get(&field.name) {
-                Expression::literal(scalar_for(default))
+                Expression::literal(scalar_for(engine, default))
             } else {
                 panic!("column '{}' has no input and no default", field.name);
             }
@@ -244,7 +243,7 @@ async fn default_substituted_for_sentinel_in_non_partition_column(
                 let raw_cells = raw
                     .get(&field.name)
                     .expect("connector input has every column");
-                let default_scalar = defaults.get(&field.name).map(scalar_for);
+                let default_scalar = defaults.get(&field.name).map(|d| scalar_for(&engine, d));
                 resolve_sentinels(raw_cells, default_scalar.as_ref())
             })
             .collect();
@@ -316,7 +315,7 @@ async fn default_used_as_partition_value_when_partition_column_missing(
                 supplied
                     .get(name)
                     .cloned()
-                    .or_else(|| defaults.get(name).map(scalar_for))
+                    .or_else(|| defaults.get(name).map(|d| scalar_for(&engine, d)))
                     .map(|v| (name.clone(), v))
             })
             .collect();
@@ -401,7 +400,7 @@ async fn default_used_as_partition_value_for_sentinel() -> Result<(), Box<dyn st
                     let resolved = sentinel_map
                         .get(name)
                         .and_then(|opt| opt.clone())
-                        .or_else(|| defaults.get(name).map(scalar_for))
+                        .or_else(|| defaults.get(name).map(|d| scalar_for(engine.as_ref(), d)))
                         .unwrap_or_else(|| {
                             panic!("partition column '{name}' has no value and no default")
                         });

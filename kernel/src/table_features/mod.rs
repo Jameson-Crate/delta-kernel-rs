@@ -103,6 +103,9 @@ pub(crate) enum TableFeature {
     GeneratedColumns,
     /// ID Columns
     IdentityColumns,
+    /// Column-level `CURRENT_DEFAULT` values applied when a column is omitted
+    /// from an `INSERT` or referenced via the `DEFAULT` SQL keyword.
+    AllowColumnDefaults,
     /// Monotonically increasing timestamps in the CommitInfo
     InCommitTimestamp,
     /// Row tracking on tables
@@ -332,6 +335,19 @@ static IDENTITY_COLUMNS_INFO: FeatureInfo = FeatureInfo {
     min_legacy_version: Some(MinReaderWriterVersion::new(1, 6)),
     feature_requirements: &[],
     kernel_support: KernelSupport::NotSupported,
+    enablement_check: EnablementCheck::AlwaysIfSupported,
+};
+
+// allowColumnDefaults is a table-features-only writer feature (no legacy version inference).
+// Presence in writerFeatures signals that the table may carry `CURRENT_DEFAULT` column metadata;
+// writers that respect the feature must apply those defaults for omitted columns or `DEFAULT`
+// markers. Kernel surfaces defaults via `Transaction::column_defaults()` and
+// `StructField::column_default()`; the actual substitution is performed by the connector.
+static ALLOW_COLUMN_DEFAULTS_INFO: FeatureInfo = FeatureInfo {
+    feature_type: FeatureType::WriterOnly,
+    min_legacy_version: None,
+    feature_requirements: &[],
+    kernel_support: KernelSupport::Supported,
     enablement_check: EnablementCheck::AlwaysIfSupported,
 };
 
@@ -636,6 +652,7 @@ impl TableFeature {
             | TableFeature::ChangeDataFeed
             | TableFeature::GeneratedColumns
             | TableFeature::IdentityColumns
+            | TableFeature::AllowColumnDefaults
             | TableFeature::InCommitTimestamp
             | TableFeature::IcebergCompatV1
             | TableFeature::IcebergCompatV2
@@ -669,6 +686,7 @@ impl TableFeature {
             TableFeature::ChangeDataFeed => &CHANGE_DATA_FEED_INFO,
             TableFeature::GeneratedColumns => &GENERATED_COLUMNS_INFO,
             TableFeature::IdentityColumns => &IDENTITY_COLUMNS_INFO,
+            TableFeature::AllowColumnDefaults => &ALLOW_COLUMN_DEFAULTS_INFO,
             TableFeature::InCommitTimestamp => &IN_COMMIT_TIMESTAMP_INFO,
             TableFeature::RowTracking => &ROW_TRACKING_INFO,
             TableFeature::DomainMetadata => &DOMAIN_METADATA_INFO,
@@ -808,6 +826,7 @@ mod tests {
                 TableFeature::ChangeDataFeed => "changeDataFeed",
                 TableFeature::GeneratedColumns => "generatedColumns",
                 TableFeature::IdentityColumns => "identityColumns",
+                TableFeature::AllowColumnDefaults => "allowColumnDefaults",
                 TableFeature::InCommitTimestamp => "inCommitTimestamp",
                 TableFeature::RowTracking => "rowTracking",
                 TableFeature::DomainMetadata => "domainMetadata",

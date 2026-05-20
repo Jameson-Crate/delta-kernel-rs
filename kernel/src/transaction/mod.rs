@@ -2720,7 +2720,6 @@ mod tests {
 
     #[test]
     fn column_defaults_only_surfaces_top_level_with_metadata() -> DeltaResult<()> {
-        use crate::expressions::Expression;
         use crate::schema::{ColumnMetadataKey, DataType, MetadataValue};
 
         let with_default = |field: StructField, sql: &str| {
@@ -2765,14 +2764,12 @@ mod tests {
         assert!(!defaults.contains_key("inner"));
 
         let a = defaults.get("a").expect("a has a default");
-        assert_eq!(a.sql, "42");
-        assert_eq!(a.data_type, DataType::INTEGER);
-        assert_eq!(a.parsed, Some(Expression::literal(Scalar::Integer(42))));
+        assert_eq!(a.sql(), "42");
+        assert_eq!(a.data_type(), &DataType::INTEGER);
 
         let b = defaults.get("b").expect("b has a default");
-        assert_eq!(b.sql, "CURRENT_TIMESTAMP()");
-        assert_eq!(b.data_type, DataType::TIMESTAMP);
-        assert_eq!(b.parsed, None);
+        assert_eq!(b.sql(), "CURRENT_TIMESTAMP()");
+        assert_eq!(b.data_type(), &DataType::TIMESTAMP);
 
         Ok(())
     }
