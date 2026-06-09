@@ -147,6 +147,10 @@ pub trait KernelPredicateEvaluator {
     /// AND and OR are implemented by first evaluating its (possibly inverted) inputs. This part is
     /// always the same, provided by [`Self::eval_pred_junction`]). The results are then combined to
     /// become the predicate's output in some implementation-defined way (this method).
+    ///
+    /// AND and OR follow SQL three-valued (Kleene) logic over `{TRUE, FALSE, NULL}`, where NULL
+    /// means "unknown". See [`KernelPredicateEvaluatorDefaults::finish_eval_pred_junction`] for the
+    /// truth tables.
     fn finish_eval_pred_junction(
         &self,
         op: JunctionPredicateOp,
@@ -562,9 +566,23 @@ impl KernelPredicateEvaluatorDefaults {
     ///
     /// The inputs were already inverted by the caller, if needed.
     ///
-    /// With AND (OR), any FALSE (TRUE) input dominates, forcing a FALSE (TRUE) output.  If there
-    /// was no dominating input, then any NULL input forces NULL output.  Otherwise, return the
-    /// non-dominant value. Inverting the operation also inverts the dominant value.
+    /// AND and OR follow SQL [three-valued (Kleene) logic][3vl] over `{TRUE, FALSE, NULL}`, where
+    /// NULL means "unknown". Each operation has a *dominant* value that short-circuits the result:
+    /// FALSE dominates AND (since `FALSE AND x = FALSE`), and TRUE dominates OR (since
+    /// `TRUE OR x = TRUE`). A dominant input forces that same output regardless of unknowns. With
+    /// no dominant input, any NULL forces a NULL output; otherwise the output is the non-dominant
+    /// value. Inverting the operation swaps its dominant value, so the tables below show the
+    /// non-inverted forms:
+    ///
+    /// ```text
+    /// AND | T  F  N      OR  | T  F  N
+    /// ----+--------      ----+--------
+    ///  T  | T  F  N       T  | T  T  T
+    ///  F  | F  F  F       F  | T  F  N
+    ///  N  | N  F  N       N  | T  N  N
+    /// ```
+    ///
+    /// [3vl]: https://en.wikipedia.org/wiki/Three-valued_logic
     pub fn finish_eval_pred_junction(
         op: JunctionPredicateOp,
         preds: &mut dyn Iterator<Item = Option<bool>>,
