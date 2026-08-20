@@ -108,6 +108,12 @@ Metrics are emitted as tracing events and collected by tracing layers. A `Defaul
 `object_store` + Tokio) lives in `default-engine/src/`. Custom engines only need to replace
 specific handlers: they can reuse defaults for the rest.
 
+Handler operations return `EngineResult`, and engine-produced lazy iterator items do the same.
+Kernel wraps those failures as `Error::Engine` at its API boundaries. JSON and Parquet writers
+retain `DeltaResult` because their input iterators carry kernel errors: input failures pass through
+unchanged, while writer-produced failures are wrapped as engine errors. `EngineData`, `GetData`,
+and row visitors remain kernel-facing and continue to use `DeltaResult`.
+
 ## EngineData Trait
 
 Kernel never assumes data is Arrow. It uses the `EngineData` trait: an opaque columnar data

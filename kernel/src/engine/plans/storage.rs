@@ -6,8 +6,9 @@ use bytes::Bytes;
 use itertools::Itertools as _;
 use url::Url;
 
+use crate::error::to_engine_error;
 use crate::plans::{IoOperation, Operation, PlanExecutor, PlanResult};
-use crate::{DeltaResult, Error, FileMeta, FileSlice, StorageHandler};
+use crate::{DeltaResult, EngineError, EngineResult, FileMeta, FileSlice, StorageHandler};
 
 /// A [`StorageHandler`] that delegates to a [`PlanExecutor`].
 pub struct PlanBasedStorageHandler {
@@ -28,44 +29,59 @@ impl StorageHandler for PlanBasedStorageHandler {
     fn list_from(
         &self,
         path: &Url,
-    ) -> DeltaResult<Box<dyn Iterator<Item = DeltaResult<FileMeta>>>> {
-        Ok(self
-            .execute_io(IoOperation::file_listing(path.clone()))?
-            .into_file_meta()?)
+    ) -> EngineResult<Box<dyn Iterator<Item = EngineResult<FileMeta>>>> {
+        let iter = self
+            .execute_io(IoOperation::file_listing(path.clone()))
+            .map_err(to_engine_error)?
+            .into_file_meta()
+            .map_err(to_engine_error)?;
+        Ok(Box::new(iter.map(|item| item.map_err(to_engine_error))))
     }
 
     fn read_files(
         &self,
         files: Vec<FileSlice>,
-    ) -> DeltaResult<Box<dyn Iterator<Item = DeltaResult<Bytes>>>> {
-        Ok(self
-            .execute_io(IoOperation::read_bytes(files))?
-            .into_bytes()?)
+    ) -> EngineResult<Box<dyn Iterator<Item = EngineResult<Bytes>>>> {
+        let iter = self
+            .execute_io(IoOperation::read_bytes(files))
+            .map_err(to_engine_error)?
+            .into_bytes()
+            .map_err(to_engine_error)?;
+        Ok(Box::new(iter.map(|item| item.map_err(to_engine_error))))
     }
 
-    fn copy_atomic(&self, src: &Url, dest: &Url) -> DeltaResult<()> {
-        self.execute_io(IoOperation::atomic_copy(src.clone(), dest.clone()))?
+    fn copy_atomic(&self, src: &Url, dest: &Url) -> EngineResult<()> {
+        self.execute_io(IoOperation::atomic_copy(src.clone(), dest.clone()))
+            .map_err(to_engine_error)?
             .into_unit()
+            .map_err(to_engine_error)
     }
 
-    fn put(&self, path: &Url, data: Bytes, overwrite: bool) -> DeltaResult<()> {
-        self.execute_io(IoOperation::write_bytes(path.clone(), data, overwrite))?
+    fn put(&self, path: &Url, data: Bytes, overwrite: bool) -> EngineResult<()> {
+        self.execute_io(IoOperation::write_bytes(path.clone(), data, overwrite))
+            .map_err(to_engine_error)?
             .into_unit()
+            .map_err(to_engine_error)
     }
 
-    fn head(&self, path: &Url) -> DeltaResult<FileMeta> {
-        self.execute_io(IoOperation::head_file(path.clone()))?
-            .into_file_meta()?
+    fn head(&self, path: &Url) -> EngineResult<FileMeta> {
+        self.execute_io(IoOperation::head_file(path.clone()))
+            .map_err(to_engine_error)?
+            .into_file_meta()
+            .map_err(to_engine_error)?
             .exactly_one()
-            .map_err(|e| Error::generic(format!("Expected exactly one file meta: {e}")))?
+            .map_err(|error| {
+                EngineError::InvalidEngineData(format!("Expected exactly one file meta: {error}"))
+            })?
+            .map_err(to_engine_error)
     }
 
-    fn delete(&self, _path: &Url) -> DeltaResult<()> {
+    fn delete(&self, _path: &Url) -> EngineResult<()> {
         // TODO(#2820): implement here once supported as IoOperation.
         // Intentionally do not use a fallback because we expect this SHOULD be implemented via
         // plan-execution.
-        Err(Error::unsupported(
-            "PlanBasedStorageHandler does not yet implement delete",
+        Err(EngineError::Unsupported(
+            "PlanBasedStorageHandler does not yet implement delete".to_string(),
         ))
     }
 }
@@ -84,7 +100,7 @@ mod tests {
 
     use super::PlanBasedStorageHandler;
     use crate::engine::sync::plan::SyncPlanExecutor;
-    use crate::{Error, StorageHandler as _};
+    use crate::{EngineError, StorageHandler as _};
 
     fn make_handler() -> PlanBasedStorageHandler {
         PlanBasedStorageHandler::new(Arc::new(SyncPlanExecutor::default()))
@@ -147,7 +163,7 @@ mod tests {
         let err = storage
             .put(&url, bytes::Bytes::from_static(b"second"), false)
             .unwrap_err();
-        assert!(matches!(err, Error::FileAlreadyExists(_)));
+        assert!(matches!(err, EngineError::FileAlreadyExists(_)));
 
         // With `overwrite = true`, the second write succeeds.
         storage
@@ -169,6 +185,6 @@ mod tests {
         // Errors on missing file
         let url = Url::from_file_path(tmp.path().join("missing.json")).unwrap();
         let err = make_handler().head(&url).unwrap_err();
-        assert!(matches!(err, Error::FileNotFound(_)));
+        assert!(matches!(err, EngineError::FileNotFound(_)));
     }
 }

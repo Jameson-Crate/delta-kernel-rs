@@ -5,7 +5,8 @@ use delta_kernel::committer::{
     CommitMetadata, CommitResponse, CommitType, Committer, PublishMetadata,
 };
 use delta_kernel::{
-    DeltaResult, DeltaResultIterator, Engine, Error as DeltaError, FileMeta, FilteredEngineData,
+    DeltaResult, DeltaResultIterator, Engine, EngineError, Error as DeltaError, FileMeta,
+    FilteredEngineData,
 };
 use tracing::{debug, info};
 use unity_catalog_delta_client_api::{
@@ -159,7 +160,7 @@ impl<C: UpdateTableClient> UCCommitter<C> {
                 );
                 Ok(CommitResponse::Committed { file_meta })
             }
-            Err(DeltaError::FileAlreadyExists(_)) => {
+            Err(error) if is_file_already_exists(&error) => {
                 info!("version 0 commit conflict: commit file already exists");
                 Ok(CommitResponse::Conflict { version: 0 })
             }
@@ -285,12 +286,21 @@ impl<C: UpdateTableClient + 'static> Committer for UCCommitter<C> {
             let dest = catalog_commit.published_location();
             match engine.storage_handler().copy_atomic(src, dest) {
                 Ok(_) => (),
-                Err(DeltaError::FileAlreadyExists(_)) => (),
-                Err(e) => return Err(e),
+                Err(EngineError::FileAlreadyExists(_)) => (),
+                Err(error) => return Err(error.into()),
             }
         }
 
         Ok(())
+    }
+}
+
+fn is_file_already_exists(error: &DeltaError) -> bool {
+    match error {
+        DeltaError::FileAlreadyExists(_)
+        | DeltaError::Engine(EngineError::FileAlreadyExists(_)) => true,
+        DeltaError::Backtraced { source, .. } => is_file_already_exists(source),
+        _ => false,
     }
 }
 

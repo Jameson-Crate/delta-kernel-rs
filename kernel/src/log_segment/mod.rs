@@ -1143,8 +1143,13 @@ impl LogSegment {
         // The boolean flag indicates whether the batch originated from a commit file
         // (true) or a checkpoint file (false).
         let actions_iter = actions
+            .map(|result| result.map_err(Error::from))
             .map_ok(|batch| ActionsBatch::new(batch, false))
-            .chain(sidecar_batches.map_ok(|batch| ActionsBatch::new(batch, false)));
+            .chain(
+                sidecar_batches
+                    .map(|result| result.map_err(Error::from))
+                    .map_ok(|batch| ActionsBatch::new(batch, false)),
+            );
 
         let checkpoint_info = CheckpointReadInfo {
             has_stats_parsed,
@@ -1186,6 +1191,7 @@ impl LogSegment {
         // Unlike the checkpoint/commit reads that feed the wrapped scan-action stream, this loop
         // consumes batches locally, so wrap it to poll the token between batches even against an
         // engine whose reader ignores it.
+        let batches = batches.map(|result| result.map_err(Error::from));
         let batches = CancellableIterator::new(batches, cancellation_token.cloned());
 
         // Extract sidecar file references

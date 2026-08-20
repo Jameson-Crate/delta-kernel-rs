@@ -54,7 +54,7 @@ impl Committer for FileSystemCommitter {
                 );
                 Ok(CommitResponse::Committed { file_meta })
             }
-            Err(Error::FileAlreadyExists(_)) => {
+            Err(error) if error.is_file_already_exists() => {
                 info!(
                     conflicting_version = version,
                     "Filesystem commit conflict: target version already exists"

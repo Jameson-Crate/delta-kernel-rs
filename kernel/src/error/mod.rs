@@ -1,9 +1,15 @@
 //! Definitions of errors that the delta kernel can encounter
 
+mod engine;
+
 use std::backtrace::{Backtrace, BacktraceStatus};
 use std::convert::Infallible;
 use std::num::ParseIntError;
 use std::str::Utf8Error;
+
+#[cfg(any(test, feature = "default-engine-base"))]
+pub(crate) use engine::to_engine_error;
+pub use engine::{EngineError, EngineResult, EngineResultIterator, EngineResultIteratorStatic};
 
 #[cfg(feature = "default-engine-base")]
 use crate::arrow::error::ArrowError;
@@ -104,6 +110,10 @@ pub enum Error {
         source: Box<Self>,
         backtrace: Box<Backtrace>,
     },
+
+    /// An error returned by an engine implementation.
+    #[error(transparent)]
+    Engine(EngineError),
 
     /// An error performing operations on arrow data
     #[cfg(feature = "default-engine-base")]
@@ -351,6 +361,41 @@ pub enum Error {
 
 // Convenience constructors for Error types that take a String argument
 impl Error {
+    pub(crate) fn is_cancelled(&self) -> bool {
+        matches!(
+            self.unbacktraced(),
+            Self::Cancelled | Self::Engine(EngineError::Cancelled)
+        )
+    }
+
+    pub(crate) fn is_file_already_exists(&self) -> bool {
+        matches!(
+            self.unbacktraced(),
+            Self::FileAlreadyExists(_) | Self::Engine(EngineError::FileAlreadyExists(_))
+        )
+    }
+
+    pub(crate) fn is_io_error(&self) -> bool {
+        matches!(
+            self.unbacktraced(),
+            Self::IOError(_) | Self::Engine(EngineError::Io(_))
+        )
+    }
+
+    pub(crate) fn is_parse_error(&self) -> bool {
+        matches!(
+            self.unbacktraced(),
+            Self::ParseError(_, _) | Self::Engine(EngineError::ParseError(_, _))
+        )
+    }
+
+    fn unbacktraced(&self) -> &Self {
+        match self {
+            Self::Backtraced { source, .. } => source.unbacktraced(),
+            error => error,
+        }
+    }
+
     pub(crate) fn scalar_conversion(
         expected: impl Into<String>,
         actual: impl Into<String>,
@@ -503,6 +548,7 @@ macro_rules! from_with_backtrace(
 );
 
 from_with_backtrace!(
+    (EngineError, Engine),
     (serde_json::Error, MalformedJson),
     (std::io::Error, IOError)
 );

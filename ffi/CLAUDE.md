@@ -21,7 +21,8 @@ Every handle has a corresponding `free_*` function (e.g. `free_engine`, `free_sn
 
 Fallible functions return `ExternResult` (tagged union of Ok/Err). The caller provides an
 `allocate_error` callback when creating the engine; kernel calls this to allocate errors in
-the caller's memory space.
+the caller's memory space. Rust `Error::Engine` failures map their `EngineError` classification to
+the corresponding stable `KernelError` code where one exists.
 
 ## Key Files
 

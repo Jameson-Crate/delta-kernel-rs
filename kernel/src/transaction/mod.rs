@@ -312,12 +312,13 @@ where
     let (output_schema, adds_expr) = build_add_action_projection(&input_schema, data_change)?;
     let adds_expr = Arc::new(adds_expr);
     Ok(add_files_metadata.map(move |add_files_batch| {
+        let add_files_batch = add_files_batch?;
         let adds_evaluator = evaluation_handler.new_expression_evaluator(
             input_schema.clone(),
             adds_expr.clone(),
             as_log_add_schema(output_schema.clone()).into(),
         )?;
-        adds_evaluator.evaluate(add_files_batch?.deref())
+        Ok(adds_evaluator.evaluate(add_files_batch.deref())?)
     }))
 }
 
@@ -553,7 +554,7 @@ impl<S> Transaction<S> {
             }
             // TODO: we may want to be more or less selective about what is retryable (this is tied
             // to the idea of "what kind of Errors should write_json_file return?")
-            Err(e @ Error::IOError(_)) => {
+            Err(e) if e.is_io_error() => {
                 // Flips the metric event from success -> failure.
                 tracing::Span::current()
                     .record("failure_reason", CommitFailureReason::RetryableIo.as_ref());
@@ -1499,11 +1500,11 @@ impl<S> Transaction<S> {
                 coalesce_stats_with_parsed,
             )?;
             let expr = Arc::new(Expression::struct_from([Expression::struct_patch(patch)?]));
-            evaluation_handler.new_expression_evaluator(
+            Ok(evaluation_handler.new_expression_evaluator(
                 input_schema.clone(),
                 expr,
                 target_schema.clone().into(),
-            )
+            )?)
         };
 
         // Build two evaluators: one for the common case where scan files do not include a
@@ -1780,7 +1781,7 @@ mod tests {
         load_test_table, string_array_to_engine_data, test_schema_flat, test_schema_nested,
         test_schema_with_array, test_schema_with_map, CapturingReporter,
     };
-    use crate::{DeltaResultIterator, EvaluationHandler, Snapshot};
+    use crate::{DeltaResultIterator, EngineError, EvaluationHandler, Snapshot};
 
     impl Transaction {
         /// Set clustering columns for testing purposes without needing a table
@@ -1801,7 +1802,9 @@ mod tests {
             _actions: DeltaResultIterator<'_, FilteredEngineData>,
             _commit_metadata: CommitMetadata,
         ) -> DeltaResult<CommitResponse> {
-            Err(Error::IOError(std::io::Error::other("simulated IO error")))
+            Err(Error::Engine(EngineError::Io(std::io::Error::other(
+                "simulated IO error",
+            ))))
         }
         fn is_catalog_committer(&self) -> bool {
             false
@@ -3084,7 +3087,8 @@ mod tests {
                 Scalar::Array(ArrayData::try_new(score_type, [30i32])?),
             ],
         )?);
-        ArrowEvaluationHandler.create_many(schema, &[&[1i64.into(), info1], &[2i64.into(), info2]])
+        Ok(ArrowEvaluationHandler
+            .create_many(schema, &[&[1i64.into(), info1], &[2i64.into(), info2]])?)
     }
 
     /// Validates that [`BoundWriteContext::logical_to_physical`] correctly renames fields at all
