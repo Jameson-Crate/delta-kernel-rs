@@ -11,14 +11,15 @@ use crate::engine::arrow_utils::{
 };
 use crate::engine::parquet_row_group_skipping::ParquetRowGroupSkipping;
 use crate::engine::{reader_options, writer_options};
+use crate::error::to_engine_error;
 use crate::object_store::DynObjectStore;
 use crate::parquet::arrow::arrow_reader::{ArrowReaderMetadata, ParquetRecordBatchReaderBuilder};
 use crate::parquet::arrow::arrow_writer::ArrowWriter;
 use crate::schema::{SchemaRef, StructType};
 use crate::utils::FoldWithOption as _;
 use crate::{
-    DeltaResult, DeltaResultIteratorStatic, EngineData, FileDataReadResultIterator, FileMeta,
-    ParquetFooter, ParquetHandler, PredicateRef,
+    DeltaResult, DeltaResultIteratorStatic, EngineData, EngineError, EngineResult,
+    FileDataReadResultIterator, FileMeta, ParquetFooter, ParquetHandler, PredicateRef,
 };
 
 pub(crate) struct SyncParquetHandler {
@@ -68,7 +69,7 @@ impl ParquetHandler for SyncParquetHandler {
         files: &[FileMeta],
         schema: SchemaRef,
         predicate: Option<PredicateRef>,
-    ) -> DeltaResult<FileDataReadResultIterator> {
+    ) -> EngineResult<FileDataReadResultIterator> {
         let iter = read_files_arrow(
             self.store.as_ref(),
             files,
@@ -76,7 +77,10 @@ impl ParquetHandler for SyncParquetHandler {
             predicate,
             try_create_from_parquet,
         );
-        Ok(Box::new(iter.map(|data| Ok(Box::new(data?) as _))))
+        Ok(Box::new(iter.map(|data| {
+            data.map(|data| Box::new(data) as Box<dyn EngineData>)
+                .map_err(to_engine_error)
+        })))
     }
 
     /// Writes engine data to a Parquet file at the specified location.
@@ -94,9 +98,12 @@ impl ParquetHandler for SyncParquetHandler {
         mut data: DeltaResultIteratorStatic<Box<dyn EngineData>>,
     ) -> DeltaResult<()> {
         let first_batch = data.next().ok_or_else(|| {
-            crate::Error::generic("Cannot write parquet file with empty data iterator")
+            crate::Error::Engine(EngineError::InvalidArgument(
+                "Cannot write parquet file with empty data iterator".to_string(),
+            ))
         })??;
-        let first_arrow = ArrowEngineData::try_from_engine_data(first_batch)?;
+        let first_arrow = ArrowEngineData::try_from_engine_data(first_batch)
+            .map_err(|error| crate::Error::Engine(to_engine_error(error)))?;
         let first_record_batch: crate::arrow::array::RecordBatch = (*first_arrow).into();
 
         let mut buf = Vec::new();
@@ -104,21 +111,34 @@ impl ParquetHandler for SyncParquetHandler {
             &mut buf,
             first_record_batch.schema(),
             writer_options(),
-        )?;
-        writer.write(&first_record_batch)?;
+        )
+        .map_err(crate::Error::from)
+        .map_err(|error| crate::Error::Engine(to_engine_error(error)))?;
+        writer
+            .write(&first_record_batch)
+            .map_err(crate::Error::from)
+            .map_err(|error| crate::Error::Engine(to_engine_error(error)))?;
         for result in data {
             let engine_data = result?;
-            let arrow_data = ArrowEngineData::try_from_engine_data(engine_data)?;
+            let arrow_data = ArrowEngineData::try_from_engine_data(engine_data)
+                .map_err(|error| crate::Error::Engine(to_engine_error(error)))?;
             let batch: crate::arrow::array::RecordBatch = (*arrow_data).into();
-            writer.write(&batch)?;
+            writer
+                .write(&batch)
+                .map_err(crate::Error::from)
+                .map_err(|error| crate::Error::Engine(to_engine_error(error)))?;
         }
-        writer.close()?;
+        writer
+            .close()
+            .map_err(crate::Error::from)
+            .map_err(|error| crate::Error::Engine(to_engine_error(error)))?;
 
         put_bytes(self.store.as_ref(), &location, buf.into(), true)
+            .map_err(|error| crate::Error::Engine(to_engine_error(error)))
     }
 
-    fn read_parquet_footer(&self, file: &FileMeta) -> DeltaResult<ParquetFooter> {
-        parquet_footer(self.store.as_ref(), file)
+    fn read_parquet_footer(&self, file: &FileMeta) -> EngineResult<ParquetFooter> {
+        parquet_footer(self.store.as_ref(), file).map_err(to_engine_error)
     }
 }
 

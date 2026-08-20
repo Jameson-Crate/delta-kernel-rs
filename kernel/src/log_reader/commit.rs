@@ -1,12 +1,10 @@
 //! Commit phase for log replay - processes JSON commit files.
 
-use itertools::Itertools;
-
 use crate::cancellation::CancellationTokenRef;
 use crate::log_replay::ActionsBatch;
 use crate::log_segment::LogSegment;
 use crate::schema::SchemaRef;
-use crate::{DeltaResult, DeltaResultIteratorStatic, Engine};
+use crate::{DeltaResult, DeltaResultIteratorStatic, Engine, Error};
 
 /// Phase that processes JSON commit files into [`ActionsBatch`]s
 pub(crate) struct CommitReader {
@@ -36,7 +34,11 @@ impl CommitReader {
                 None,
                 cancellation_token.cloned(),
             )?
-            .map_ok(|batch| ActionsBatch::new(batch, true));
+            .map(|result| {
+                result
+                    .map(|batch| ActionsBatch::new(batch, true))
+                    .map_err(Error::from)
+            });
 
         Ok(Self {
             actions: Box::new(actions),

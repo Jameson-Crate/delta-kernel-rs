@@ -1,4 +1,4 @@
-use delta_kernel::{DeltaResult, Error};
+use delta_kernel::{DeltaResult, EngineError as DeltaEngineError, Error};
 use tracing::warn;
 
 use crate::handle::Handle;
@@ -80,6 +80,7 @@ impl From<Error> for KernelError {
             // NOTE: By definition, no kernel Error maps to FFIError
             #[cfg(feature = "default-engine-base")]
             Error::Arrow(_) => KernelError::ArrowError,
+            Error::Engine(error) => kernel_error_from_engine_error(error),
             Error::CheckpointWrite(_) => KernelError::CheckpointWriteError,
             Error::EngineDataType(_) => KernelError::EngineDataTypeError,
             Error::Extract(..) => KernelError::ExtractError,
@@ -142,6 +143,22 @@ impl From<Error> for KernelError {
             Error::Cancelled => KernelError::CancelledError,
             _ => KernelError::UnknownError,
         }
+    }
+}
+
+fn kernel_error_from_engine_error(error: DeltaEngineError) -> KernelError {
+    match error {
+        DeltaEngineError::FileNotFound(_) => KernelError::FileNotFoundError,
+        DeltaEngineError::FileAlreadyExists(_) => KernelError::FileAlreadyExists,
+        DeltaEngineError::Cancelled => KernelError::CancelledError,
+        DeltaEngineError::InvalidEngineData(_) => KernelError::EngineDataTypeError,
+        DeltaEngineError::Unsupported(_) => KernelError::UnsupportedError,
+        DeltaEngineError::ParseError(_, _) => KernelError::ParseError,
+        DeltaEngineError::Io(_) => KernelError::IOErrorError,
+        DeltaEngineError::InvalidArgument(_)
+        | DeltaEngineError::Generic(_)
+        | DeltaEngineError::External(_) => KernelError::GenericError,
+        _ => KernelError::UnknownError,
     }
 }
 
@@ -376,6 +393,26 @@ mod error_code_tests {
             KernelError::RowTrackingChangeFeedUnsupported
         );
         assert_eq!(KernelError::RowTrackingChangeFeedUnsupported as i32, 44);
+    }
+
+    #[test]
+    fn engine_error_classifications_map_to_stable_ffi_codes() {
+        assert_eq!(
+            KernelError::from(Error::Engine(DeltaEngineError::FileNotFound(
+                "missing".to_string(),
+            ))),
+            KernelError::FileNotFoundError
+        );
+        assert_eq!(
+            KernelError::from(Error::Engine(DeltaEngineError::Io(std::io::Error::other(
+                "io",
+            )))),
+            KernelError::IOErrorError
+        );
+        assert_eq!(
+            KernelError::from(Error::Engine(DeltaEngineError::Cancelled)),
+            KernelError::CancelledError
+        );
     }
 }
 

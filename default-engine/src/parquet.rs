@@ -29,9 +29,9 @@ use delta_kernel::parquet::arrow::async_writer::{AsyncArrowWriter, ParquetObject
 use delta_kernel::schema::{SchemaRef, StructType};
 use delta_kernel::transaction::BoundWriteContext;
 use delta_kernel::{
-    CancellationTokenRef, DeltaResult, DeltaResultIteratorStatic, EngineData, Error,
-    FileDataReadResultIterator, FileMeta, FoldWithOption as _, ParquetFooter, ParquetHandler,
-    PredicateRef,
+    CancellationTokenRef, DeltaResult, DeltaResultIteratorStatic, EngineData, EngineError,
+    EngineResult, Error, FileDataReadResultIterator, FileMeta, FoldWithOption as _, ParquetFooter,
+    ParquetHandler, PredicateRef,
 };
 use futures::stream::{self, BoxStream};
 use futures::{StreamExt, TryStreamExt};
@@ -40,7 +40,10 @@ use uuid::Uuid;
 use crate::executor::TaskExecutor;
 use crate::file_stream::{FileOpenFuture, FileOpener, FileStream};
 use crate::stats::collect_stats;
-use crate::UrlExt;
+use crate::{
+    delta_to_engine_error, external_engine_error, object_store_engine_error, wrap_engine_error,
+    UrlExt,
+};
 
 #[derive(Debug)]
 pub struct DefaultParquetHandler<E: TaskExecutor> {
@@ -105,14 +108,17 @@ impl DataFileMetadata {
                 _ => builder.values().append_null(),
             }
         }
-        builder.append(true)?;
+        builder
+            .append(true)
+            .map_err(Error::from)
+            .map_err(wrap_engine_error)?;
         let partitions = Arc::new(builder.finish());
         // this means max size we can write is i64::MAX (~8EB)
-        let size: i64 = self
-            .file_meta
-            .size
-            .try_into()
-            .map_err(|_| Error::generic("Failed to convert parquet metadata 'size' to i64"))?;
+        let size: i64 = self.file_meta.size.try_into().map_err(|_| {
+            Error::Engine(EngineError::Generic(
+                "Failed to convert parquet metadata 'size' to i64".to_string(),
+            ))
+        })?;
         let size = Arc::new(Int64Array::from(vec![size]));
         let modification_time = Arc::new(Int64Array::from(vec![self.file_meta.last_modified]));
 
@@ -142,10 +148,13 @@ impl DataFileMetadata {
             Field::new("stats", stats_array.data_type().clone(), true),
         ]);
 
-        Ok(Box::new(ArrowEngineData::new(RecordBatch::try_new(
+        let batch = RecordBatch::try_new(
             Arc::new(schema),
             vec![path, partitions, size, modification_time, stats_array],
-        )?)))
+        )
+        .map_err(Error::from)
+        .map_err(wrap_engine_error)?;
+        Ok(Box::new(ArrowEngineData::new(batch)))
     }
 }
 
@@ -197,45 +206,67 @@ impl<E: TaskExecutor> DefaultParquetHandler<E> {
         stats_columns: &[ColumnName],
         physical_schema: &StructType,
     ) -> DeltaResult<DataFileMetadata> {
-        let batch: Box<_> = ArrowEngineData::try_from_engine_data(data)?;
+        let batch: Box<_> =
+            ArrowEngineData::try_from_engine_data(data).map_err(wrap_engine_error)?;
         let record_batch = batch.record_batch();
 
         // Collect statistics before writing (includes numRecords)
-        let stats = collect_stats(record_batch, stats_columns, physical_schema)?;
+        let stats = collect_stats(record_batch, stats_columns, physical_schema)
+            .map_err(wrap_engine_error)?;
 
         let mut buffer = vec![];
-        let mut writer = ArrowWriter::try_new_with_options(
-            &mut buffer,
-            record_batch.schema(),
-            writer_options(),
-        )?;
-        writer.write(record_batch)?;
-        writer.close()?; // writer must be closed to write footer
+        let mut writer =
+            ArrowWriter::try_new_with_options(&mut buffer, record_batch.schema(), writer_options())
+                .map_err(Error::from)
+                .map_err(wrap_engine_error)?;
+        writer
+            .write(record_batch)
+            .map_err(Error::from)
+            .map_err(wrap_engine_error)?;
+        writer
+            .close()
+            .map_err(Error::from)
+            .map_err(wrap_engine_error)?; // writer must be closed to write footer
 
-        let size: u64 = buffer
-            .len()
-            .try_into()
-            .map_err(|_| Error::generic("unable to convert usize to u64"))?;
+        let size: u64 = buffer.len().try_into().map_err(|_| {
+            Error::Engine(EngineError::Generic(
+                "unable to convert usize to u64".to_string(),
+            ))
+        })?;
         let name: String = format!("{}.parquet", Uuid::new_v4());
         // fail if path does not end with a trailing slash
         if !path.path().ends_with('/') {
-            return Err(Error::generic(format!(
+            return Err(Error::Engine(EngineError::InvalidArgument(format!(
                 "Path must end with a trailing slash: {path}"
-            )));
+            ))));
         }
-        let path = path.join(&name)?;
+        let path = path
+            .join(&name)
+            .map_err(external_engine_error)
+            .map_err(Error::Engine)?;
+
+        let object_path = Path::from_url_path(path.path())
+            .map_err(external_engine_error)
+            .map_err(Error::Engine)?;
 
         self.store
-            .put(&Path::from_url_path(path.path())?, buffer.into())
-            .await?;
+            .put(&object_path, buffer.into())
+            .await
+            .map_err(object_store_engine_error)
+            .map_err(Error::Engine)?;
 
-        let metadata = self.store.head(&Path::from_url_path(path.path())?).await?;
+        let metadata = self
+            .store
+            .head(&object_path)
+            .await
+            .map_err(object_store_engine_error)
+            .map_err(Error::Engine)?;
         let modification_time = metadata.last_modified.timestamp_millis();
         if size != metadata.size {
-            return Err(Error::generic(format!(
+            return Err(Error::Engine(EngineError::Generic(format!(
                 "Size mismatch after writing parquet file: expected {}, got {}",
                 size, metadata.size
-            )));
+            ))));
         }
 
         let file_meta = FileMeta::new(path, modification_time, size);
@@ -275,12 +306,17 @@ async fn read_parquet_files_impl(
     predicate: Option<PredicateRef>,
     buffer_size: usize,
     batch_size: usize,
-) -> DeltaResult<BoxStream<'static, DeltaResult<Box<dyn EngineData>>>> {
+) -> EngineResult<BoxStream<'static, EngineResult<Box<dyn EngineData>>>> {
     if files.is_empty() {
         return Ok(Box::pin(stream::empty()));
     }
 
-    let arrow_schema = Arc::new(physical_schema.as_ref().try_into_arrow()?);
+    let arrow_schema = Arc::new(
+        physical_schema
+            .as_ref()
+            .try_into_arrow()
+            .map_err(external_engine_error)?,
+    );
 
     // get the first FileMeta to decide how to fetch the file.
     // NB: This means that every file in `FileMeta` _must_ have the same scheme or things will break
@@ -326,7 +362,7 @@ impl<E: TaskExecutor> ParquetHandler for DefaultParquetHandler<E> {
         files: &[FileMeta],
         physical_schema: SchemaRef,
         predicate: Option<PredicateRef>,
-    ) -> DeltaResult<FileDataReadResultIterator> {
+    ) -> EngineResult<FileDataReadResultIterator> {
         self.read_parquet_files_with_cancellation(files, physical_schema, predicate, None)
     }
 
@@ -336,7 +372,7 @@ impl<E: TaskExecutor> ParquetHandler for DefaultParquetHandler<E> {
         physical_schema: SchemaRef,
         predicate: Option<PredicateRef>,
         cancellation_token: Option<CancellationTokenRef>,
-    ) -> DeltaResult<FileDataReadResultIterator> {
+    ) -> EngineResult<FileDataReadResultIterator> {
         let future = read_parquet_files_impl(
             self.store.clone(),
             files.to_vec(),
@@ -372,40 +408,61 @@ impl<E: TaskExecutor> ParquetHandler for DefaultParquetHandler<E> {
         mut data: DeltaResultIteratorStatic<Box<dyn EngineData>>,
     ) -> DeltaResult<()> {
         let store = self.store.clone();
+        let first_batch = match data.next() {
+            Some(result) => result?,
+            None => {
+                return Err(Error::Engine(EngineError::InvalidArgument(
+                    "Cannot write parquet file with empty data iterator".to_string(),
+                )))
+            }
+        };
+        let first_arrow =
+            ArrowEngineData::try_from_engine_data(first_batch).map_err(wrap_engine_error)?;
+        let first_record_batch: RecordBatch = (*first_arrow).into();
 
         self.task_executor.block_on(async move {
-            let path = Path::from_url_path(location.path())?;
-
-            // Get first batch to initialize writer with schema
-            let first_batch = data.next().ok_or_else(|| {
-                Error::generic("Cannot write parquet file with empty data iterator")
-            })??;
-            let first_arrow = ArrowEngineData::try_from_engine_data(first_batch)?;
-            let first_record_batch: RecordBatch = (*first_arrow).into();
+            let path = Path::from_url_path(location.path())
+                .map_err(external_engine_error)
+                .map_err(Error::Engine)?;
 
             let object_writer = ParquetObjectWriter::new(store, path);
             let schema = first_record_batch.schema();
             let mut writer =
-                AsyncArrowWriter::try_new_with_options(object_writer, schema, writer_options())?;
+                AsyncArrowWriter::try_new_with_options(object_writer, schema, writer_options())
+                    .map_err(Error::from)
+                    .map_err(wrap_engine_error)?;
 
             // Write the first batch
-            writer.write(&first_record_batch).await?;
+            writer
+                .write(&first_record_batch)
+                .await
+                .map_err(Error::from)
+                .map_err(wrap_engine_error)?;
 
             // Write remaining batches
             for result in data {
                 let engine_data = result?;
-                let arrow_data = ArrowEngineData::try_from_engine_data(engine_data)?;
+                let arrow_data = ArrowEngineData::try_from_engine_data(engine_data)
+                    .map_err(wrap_engine_error)?;
                 let batch: RecordBatch = (*arrow_data).into();
-                writer.write(&batch).await?;
+                writer
+                    .write(&batch)
+                    .await
+                    .map_err(Error::from)
+                    .map_err(wrap_engine_error)?;
             }
 
-            writer.finish().await?;
+            writer
+                .finish()
+                .await
+                .map_err(Error::from)
+                .map_err(wrap_engine_error)?;
 
             Ok(())
         })
     }
 
-    fn read_parquet_footer(&self, file: &FileMeta) -> DeltaResult<ParquetFooter> {
+    fn read_parquet_footer(&self, file: &FileMeta) -> EngineResult<ParquetFooter> {
         self.read_parquet_footer_with_cancellation(file, None)
     }
 
@@ -413,7 +470,7 @@ impl<E: TaskExecutor> ParquetHandler for DefaultParquetHandler<E> {
         &self,
         file: &FileMeta,
         cancellation_token: Option<CancellationTokenRef>,
-    ) -> DeltaResult<ParquetFooter> {
+    ) -> EngineResult<ParquetFooter> {
         let store = self.store.clone();
         let location = file.location.clone();
         let file_size = file.size;
@@ -421,29 +478,33 @@ impl<E: TaskExecutor> ParquetHandler for DefaultParquetHandler<E> {
         let footer_future = async move {
             let metadata = if location.is_presigned() {
                 let client = reqwest::Client::new();
-                let response =
-                    client.get(location.as_str()).send().await.map_err(|e| {
-                        Error::generic(format!("Failed to fetch presigned URL: {e}"))
-                    })?;
-                let bytes = response
-                    .bytes()
+                let response = client
+                    .get(location.as_str())
+                    .send()
                     .await
-                    .map_err(|e| Error::generic(format!("Failed to read response bytes: {e}")))?;
-                ArrowReaderMetadata::load(&bytes, reader_options())?
+                    .map_err(external_engine_error)?;
+                let bytes = response.bytes().await.map_err(external_engine_error)?;
+                ArrowReaderMetadata::load(&bytes, reader_options())
+                    .map_err(external_engine_error)?
             } else {
-                let path = Path::from_url_path(location.path())?;
+                let path = Path::from_url_path(location.path()).map_err(external_engine_error)?;
                 let mut reader = ParquetObjectReader::new(store, path).with_file_size(file_size);
-                ArrowReaderMetadata::load_async(&mut reader, reader_options()).await?
+                ArrowReaderMetadata::load_async(&mut reader, reader_options())
+                    .await
+                    .map_err(external_engine_error)?
             };
 
-            let schema = Arc::new(StructType::try_from_arrow(metadata.schema().as_ref())?);
-            Ok(ParquetFooter { schema })
+            let schema = Arc::new(
+                StructType::try_from_arrow(metadata.schema().as_ref())
+                    .map_err(external_engine_error)?,
+            );
+            Ok::<_, EngineError>(ParquetFooter { schema })
         };
 
         // Race the footer read against cancellation so a cancelled request stops promptly.
         match cancellation_token {
             Some(token) => super::block_on_or_cancelled(&self.task_executor, token, footer_future)
-                .unwrap_or(Err(Error::Cancelled)),
+                .unwrap_or(Err(EngineError::Cancelled)),
             None => self.task_executor.block_on(footer_future),
         }
     }
@@ -457,9 +518,9 @@ async fn open_parquet_file(
     limit: Option<usize>,
     batch_size: usize,
     file_meta: FileMeta,
-) -> DeltaResult<BoxStream<'static, DeltaResult<RecordBatch>>> {
+) -> EngineResult<BoxStream<'static, EngineResult<RecordBatch>>> {
     let file_location = file_meta.location.to_string();
-    let path = Path::from_url_path(file_meta.location.path())?;
+    let path = Path::from_url_path(file_meta.location.path()).map_err(external_engine_error)?;
 
     let mut reader = {
         use delta_kernel::object_store::ObjectStoreScheme;
@@ -480,15 +541,18 @@ async fn open_parquet_file(
         {
             // also note doing HEAD then actual GET isn't atomic, and leaves us vulnerable
             // to file changing between the two calls.
-            let meta = store.head(&path).await?;
+            let meta = store.head(&path).await.map_err(object_store_engine_error)?;
             ParquetObjectReader::new(store, path).with_file_size(meta.size)
         } else {
             ParquetObjectReader::new(store, path)
         }
     };
 
-    let metadata = ArrowReaderMetadata::load_async(&mut reader, reader_options()).await?;
-    let (requested_ordering, mask) = parquet_read_plan(&table_schema, &metadata)?;
+    let metadata = ArrowReaderMetadata::load_async(&mut reader, reader_options())
+        .await
+        .map_err(external_engine_error)?;
+    let (requested_ordering, mask) =
+        parquet_read_plan(&table_schema, &metadata).map_err(delta_to_engine_error)?;
 
     let mut row_indexes = ordering_needs_row_indexes(&requested_ordering)
         .then(|| RowIndexBuilder::new(metadata.metadata().row_groups()));
@@ -501,18 +565,21 @@ async fn open_parquet_file(
         .fold_with(limit, ParquetRecordBatchStreamBuilder::with_limit)
         .with_batch_size(batch_size);
 
-    let mut row_indexes = row_indexes.map(|rb| rb.build()).transpose()?;
-    let stream = builder.build()?;
+    let mut row_indexes = row_indexes
+        .map(|rb| rb.build().map_err(delta_to_engine_error))
+        .transpose()?;
+    let stream = builder.build().map_err(external_engine_error)?;
 
     let stream = stream.map(move |rbr| {
         fixup_parquet_read(
-            rbr?,
+            rbr.map_err(external_engine_error)?,
             &requested_ordering,
             row_indexes.as_mut(),
             Some(&file_location),
             Some(&table_schema),
         )
         .map(Into::into)
+        .map_err(delta_to_engine_error)
     });
     Ok(stream.boxed())
 }
@@ -543,7 +610,11 @@ impl PresignedUrlOpener {
 }
 
 impl FileOpener for PresignedUrlOpener {
-    fn open(&self, file_meta: FileMeta, _range: Option<Range<i64>>) -> DeltaResult<FileOpenFuture> {
+    fn open(
+        &self,
+        file_meta: FileMeta,
+        _range: Option<Range<i64>>,
+    ) -> EngineResult<FileOpenFuture> {
         let batch_size = self.batch_size;
         let table_schema = self.table_schema.clone();
         let predicate = self.predicate.clone();
@@ -553,9 +624,18 @@ impl FileOpener for PresignedUrlOpener {
 
         Ok(Box::pin(async move {
             // fetch the file from the interweb
-            let reader = client.get(&file_location).send().await?.bytes().await?;
-            let metadata = ArrowReaderMetadata::load(&reader, reader_options())?;
-            let (requested_ordering, mask) = parquet_read_plan(&table_schema, &metadata)?;
+            let reader = client
+                .get(&file_location)
+                .send()
+                .await
+                .map_err(external_engine_error)?
+                .bytes()
+                .await
+                .map_err(external_engine_error)?;
+            let metadata = ArrowReaderMetadata::load(&reader, reader_options())
+                .map_err(external_engine_error)?;
+            let (requested_ordering, mask) =
+                parquet_read_plan(&table_schema, &metadata).map_err(delta_to_engine_error)?;
 
             let mut row_indexes = ordering_needs_row_indexes(&requested_ordering)
                 .then(|| RowIndexBuilder::new(metadata.metadata().row_groups()));
@@ -567,19 +647,23 @@ impl FileOpener for PresignedUrlOpener {
                 })
                 .fold_with(limit, ParquetRecordBatchReaderBuilder::with_limit)
                 .with_batch_size(batch_size)
-                .build()?;
+                .build()
+                .map_err(external_engine_error)?;
 
-            let mut row_indexes = row_indexes.map(|rb| rb.build()).transpose()?;
+            let mut row_indexes = row_indexes
+                .map(|rb| rb.build().map_err(delta_to_engine_error))
+                .transpose()?;
             let stream = futures::stream::iter(reader);
             let stream = stream.map(move |rbr| {
                 fixup_parquet_read(
-                    rbr?,
+                    rbr.map_err(external_engine_error)?,
                     &requested_ordering,
                     row_indexes.as_mut(),
                     Some(&file_location),
                     Some(&table_schema),
                 )
                 .map(Into::into)
+                .map_err(delta_to_engine_error)
             });
             Ok(stream.boxed())
         }))
@@ -860,7 +944,7 @@ mod tests {
                 None,
             )
             .unwrap()
-            .map(into_record_batch)
+            .map(|result| into_record_batch(result.map_err(Error::from)))
             .try_collect()
             .unwrap();
 
@@ -937,7 +1021,7 @@ mod tests {
         let data: Vec<RecordBatch> = handler
             .read_parquet_files(slice::from_ref(&file_meta), footer.schema.clone(), None)
             .unwrap()
-            .map(into_record_batch)
+            .map(|result| into_record_batch(result.map_err(Error::from)))
             .try_collect()
             .unwrap();
 
@@ -1124,7 +1208,7 @@ mod tests {
                 None,
             )
             .unwrap()
-            .map(into_record_batch)
+            .map(|result| into_record_batch(result.map_err(Error::from)))
             .try_collect()
             .unwrap();
 
@@ -1156,8 +1240,27 @@ mod tests {
                     &physical_schema,
                 )
                 .await,
-            "Generic delta kernel error: Path must end with a trailing slash: memory:///data",
+            "Invalid engine argument: Path must end with a trailing slash: memory:///data",
         );
+    }
+
+    #[test]
+    fn parquet_writer_preserves_input_iterator_error() {
+        let handler = DefaultParquetHandler::new(
+            Arc::new(InMemory::new()),
+            Arc::new(TokioBackgroundExecutor::new()),
+        );
+        let input_error = Error::MissingData("input batch".to_string());
+        let data: DeltaResultIteratorStatic<Box<dyn EngineData>> =
+            Box::new(std::iter::once(Err(input_error)));
+
+        let result = ParquetHandler::write_parquet_file(
+            &handler,
+            Url::parse("memory:///data.parquet").unwrap(),
+            data,
+        );
+
+        assert!(matches!(result, Err(Error::MissingData(message)) if message == "input batch"));
     }
 
     #[tokio::test]
@@ -1215,7 +1318,7 @@ mod tests {
                 None,
             )
             .unwrap()
-            .map(into_record_batch)
+            .map(|result| into_record_batch(result.map_err(Error::from)))
             .try_collect()
             .unwrap();
 
@@ -1269,7 +1372,7 @@ mod tests {
                 None,
             )
             .unwrap()
-            .map(into_record_batch)
+            .map(|result| into_record_batch(result.map_err(Error::from)))
             .try_collect()
             .unwrap();
 
@@ -1417,7 +1520,7 @@ mod tests {
                 None,
             )
             .unwrap()
-            .map(into_record_batch)
+            .map(|result| into_record_batch(result.map_err(Error::from)))
             .try_collect()
             .unwrap();
 
@@ -1684,7 +1787,7 @@ mod tests {
         let data: Vec<RecordBatch> = handler
             .read_parquet_files(slice::from_ref(&file_meta), kernel_schema, None)
             .unwrap()
-            .map(into_record_batch)
+            .map(|result| into_record_batch(result.map_err(Error::from)))
             .try_collect()
             .unwrap();
 

@@ -246,7 +246,7 @@ impl Iterator for IncrementalScanStream {
             match self.actions.next()? {
                 Err(e) => {
                     self.errored = true;
-                    return Some(Err(e));
+                    return Some(Err(e.into()));
                 }
                 Ok(batch) => match process_batch(
                     batch,
@@ -273,13 +273,12 @@ impl IncrementalScanStream {
     /// data structure they prefer.
     ///
     /// # Errors
-    /// - [`Error::IOError`], [`Error::ObjectStore`], or [`Error::Reqwest`] on transient I/O while
-    ///   reading commit JSONs. Retryable by rebuilding the stream.
-    /// - [`Error::FileNotFound`] if a commit was vacuumed between [`IncrementalScanBuilder::build`]
-    ///   and stream consumption. Rebuilding will likely return `Ok(None)` (commits unavailable);
-    ///   fall back to [`crate::Snapshot::scan_builder`].
-    /// - [`Error::MalformedJson`] or [`Error::Arrow`] (default-engine) on commit JSON corruption.
-    ///   Not retryable.
+    /// - [`Error::Engine`] containing an I/O-classified engine error while reading commit JSONs.
+    ///   Retryable by rebuilding the stream.
+    /// - [`Error::Engine`] containing [`crate::EngineError::FileNotFound`] if a commit was vacuumed
+    ///   between [`IncrementalScanBuilder::build`] and stream consumption. Rebuilding will likely
+    ///   return `Ok(None)` (commits unavailable); fall back to [`crate::Snapshot::scan_builder`].
+    /// - [`Error::Engine`] on commit JSON corruption. Not retryable.
     /// - [`Error::Generic`] on malformed `deletionVector` fields in a commit row, or on "cannot
     ///   finish a stream that previously errored" when a terminal method is called after a prior
     ///   `next()` returned `Err`. Rebuild to retry the latter; the former indicates table

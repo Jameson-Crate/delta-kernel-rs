@@ -221,7 +221,7 @@ fn evaluate_expression_impl(
     batch: &dyn EngineData,
     evaluator: &dyn ExpressionEvaluator,
 ) -> DeltaResult<Handle<ExclusiveEngineData>> {
-    evaluator.evaluate(batch).map(Into::into)
+    Ok(evaluator.evaluate(batch)?.into())
 }
 
 #[cfg(test)]

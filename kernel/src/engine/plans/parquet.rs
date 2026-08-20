@@ -5,11 +5,12 @@ use std::sync::Arc;
 use tracing::debug;
 use url::Url;
 
+use crate::error::to_engine_error;
 use crate::plans::{IoOperation, Operation, PlanBuilder, PlanExecutor};
 use crate::schema::SchemaRef;
 use crate::{
-    DeltaResult, DeltaResultIteratorStatic, EngineData, Error, FileDataReadResultIterator,
-    FileMeta, ParquetFooter, ParquetHandler, PredicateRef,
+    DeltaResult, DeltaResultIteratorStatic, EngineData, EngineError, EngineResult,
+    FileDataReadResultIterator, FileMeta, ParquetFooter, ParquetHandler, PredicateRef,
 };
 
 /// A [`ParquetHandler`] that delegates to a [`PlanExecutor`].
@@ -41,13 +42,19 @@ impl ParquetHandler for PlanBasedParquetHandler {
         files: &[FileMeta],
         physical_schema: SchemaRef,
         _predicate: Option<PredicateRef>,
-    ) -> DeltaResult<FileDataReadResultIterator> {
+    ) -> EngineResult<FileDataReadResultIterator> {
         // TODO: `_predicate` is dropped. Re-apply it as a Filter node over the scan; the
         // single-node executor can then match the filter -> scan shape.
-        let query = PlanBuilder::scan_parquet(files.to_vec(), &[], physical_schema)?.build()?;
-        self.executor
-            .execute_op(Operation::QueryPlan(query))?
+        let query = PlanBuilder::scan_parquet(files.to_vec(), &[], physical_schema)
+            .and_then(|builder| builder.build())
+            .map_err(to_engine_error)?;
+        let iter = self
+            .executor
+            .execute_op(Operation::QueryPlan(query))
+            .map_err(to_engine_error)?
             .into_data()
+            .map_err(to_engine_error)?;
+        Ok(Box::new(iter.map(|item| item.map_err(to_engine_error))))
     }
 
     fn write_parquet_file(
@@ -56,20 +63,23 @@ impl ParquetHandler for PlanBasedParquetHandler {
         data: DeltaResultIteratorStatic<Box<dyn EngineData>>,
     ) -> DeltaResult<()> {
         let Some(fallback) = &self.fallback else {
-            return Err(Error::unsupported(
+            return Err(crate::Error::Engine(EngineError::Unsupported(
                 "PlanBasedParquetHandler does not support write_parquet_file yet, and no fallback \
-                 handler is configured",
-            ));
+                 handler is configured"
+                    .to_string(),
+            )));
         };
         debug!(%location, "PlanBasedParquetHandler delegating write_parquet_file to fallback handler");
         fallback.write_parquet_file(location, data)
     }
 
-    fn read_parquet_footer(&self, file: &FileMeta) -> DeltaResult<ParquetFooter> {
+    fn read_parquet_footer(&self, file: &FileMeta) -> EngineResult<ParquetFooter> {
         let op = IoOperation::parquet_footer(file.clone());
         self.executor
-            .execute_op(Operation::IoOperation(op))?
+            .execute_op(Operation::IoOperation(op))
+            .map_err(to_engine_error)?
             .into_parquet_footer()
+            .map_err(to_engine_error)
     }
 }
 

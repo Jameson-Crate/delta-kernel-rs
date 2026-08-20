@@ -182,14 +182,17 @@ pub mod parallel;
 pub(crate) mod parallel;
 
 pub use action_reconciliation::{ActionReconciliationIterator, ActionReconciliationIteratorState};
-use cancellation::check_cancelled;
+use cancellation::check_engine_cancelled;
 pub use cancellation::{CancellationToken, CancellationTokenRef, CancelledFuture};
 pub use delta_kernel_derive;
 use delta_kernel_derive::internal_api;
 pub use engine_data::{
     EngineData, FilteredEngineData, FilteredRowVisitor, GetData, RowIndexIterator, RowVisitor,
 };
-pub use error::{DeltaResult, DeltaResultIterator, DeltaResultIteratorStatic, Error};
+pub use error::{
+    DeltaResult, DeltaResultIterator, DeltaResultIteratorStatic, EngineError, EngineResult,
+    EngineResultIterator, EngineResultIteratorStatic, Error,
+};
 use expressions::{literal_expression_transform, Scalar};
 pub use expressions::{Expression, ExpressionRef, Predicate, PredicateRef};
 pub use log_compaction::{should_compact, LogCompactionWriter};
@@ -225,7 +228,7 @@ pub type FileSlice = (Url, Option<Range<FileIndex>>);
 pub type FileDataReadResult = (FileMeta, Box<dyn EngineData>);
 
 /// An iterator of data read from specified files
-pub type FileDataReadResultIterator = DeltaResultIteratorStatic<Box<dyn EngineData>>;
+pub type FileDataReadResultIterator = EngineResultIteratorStatic<Box<dyn EngineData>>;
 
 /// The metadata that describes an object.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -435,7 +438,7 @@ pub trait ExpressionEvaluator: AsAny {
     /// Produces one value for each row of the input.
     /// The data type of the output is same as the type output of the expression this evaluator is
     /// using.
-    fn evaluate(&self, batch: &dyn EngineData) -> DeltaResult<Box<dyn EngineData>>;
+    fn evaluate(&self, batch: &dyn EngineData) -> EngineResult<Box<dyn EngineData>>;
 }
 
 /// Trait for implementing a Predicate evaluator.
@@ -447,7 +450,7 @@ pub trait PredicateEvaluator: AsAny {
     /// Evaluate the predicate on a given EngineData.
     ///
     /// Produces one boolean value for each row of the input.
-    fn evaluate(&self, batch: &dyn EngineData) -> DeltaResult<Box<dyn EngineData>>;
+    fn evaluate(&self, batch: &dyn EngineData) -> EngineResult<Box<dyn EngineData>>;
 }
 
 /// Provides expression evaluation capability to Delta Kernel.
@@ -477,7 +480,7 @@ pub trait EvaluationHandler: AsAny {
         input_schema: SchemaRef,
         expression: ExpressionRef,
         output_type: DataType,
-    ) -> DeltaResult<Arc<dyn ExpressionEvaluator>>;
+    ) -> EngineResult<Arc<dyn ExpressionEvaluator>>;
 
     /// Create a [`PredicateEvaluator`] that can evaluate the given [`Predicate`] on columnar
     /// batches with the given [`Schema`] to produce a column of boolean results.
@@ -494,13 +497,13 @@ pub trait EvaluationHandler: AsAny {
         &self,
         input_schema: SchemaRef,
         predicate: PredicateRef,
-    ) -> DeltaResult<Arc<dyn PredicateEvaluator>>;
+    ) -> EngineResult<Arc<dyn PredicateEvaluator>>;
 
     /// Create a single-row all-null-value [`EngineData`] with the schema specified by
     /// `output_schema`.
     // NOTE: we should probably allow DataType instead of SchemaRef, but can expand that in the
     // future.
-    fn null_row(&self, output_schema: SchemaRef) -> DeltaResult<Box<dyn EngineData>>;
+    fn null_row(&self, output_schema: SchemaRef) -> EngineResult<Box<dyn EngineData>>;
 
     /// Create a multi-row [`EngineData`] by applying the given schema to multiple rows of values.
     ///
@@ -531,7 +534,7 @@ pub trait EvaluationHandler: AsAny {
         &self,
         schema: SchemaRef,
         rows: &[&[Scalar]],
-    ) -> DeltaResult<Box<dyn EngineData>>;
+    ) -> EngineResult<Box<dyn EngineData>>;
 }
 
 /// Internal trait to allow us to have a private `create_one` API that's implemented for all
@@ -556,7 +559,7 @@ trait EvaluationHandlerExtension: EvaluationHandler {
 
         let eval =
             self.new_expression_evaluator(null_row_schema, row_expr.into(), schema.into())?;
-        eval.evaluate(null_row.as_ref())
+        Ok(eval.evaluate(null_row.as_ref())?)
     }
 }
 
@@ -617,35 +620,37 @@ pub trait StorageHandler: AsAny {
     ///   contains all files at or below that directory.
     /// - Otherwise, the parent is the directory containing `path`, and only files (at any depth
     ///   under that parent) whose full path sorts strictly greater than `path` are returned.
-    fn list_from(&self, path: &Url)
-        -> DeltaResult<Box<dyn Iterator<Item = DeltaResult<FileMeta>>>>;
+    fn list_from(
+        &self,
+        path: &Url,
+    ) -> EngineResult<Box<dyn Iterator<Item = EngineResult<FileMeta>>>>;
 
     /// Read data specified by the start and end offset from the file.
     fn read_files(
         &self,
         files: Vec<FileSlice>,
-    ) -> DeltaResult<Box<dyn Iterator<Item = DeltaResult<Bytes>>>>;
+    ) -> EngineResult<Box<dyn Iterator<Item = EngineResult<Bytes>>>>;
 
     /// Copy a file atomically from source to destination. If the destination file already exists,
-    /// it must return Err(Error::FileAlreadyExists).
-    fn copy_atomic(&self, src: &Url, dest: &Url) -> DeltaResult<()>;
+    /// it must return [`EngineError::FileAlreadyExists`].
+    fn copy_atomic(&self, src: &Url, dest: &Url) -> EngineResult<()>;
 
     /// Write data to the specified path.
     ///
     /// If `overwrite` is false and the file already exists, this must return
-    /// `Err(Error::FileAlreadyExists)`.
-    fn put(&self, path: &Url, data: Bytes, overwrite: bool) -> DeltaResult<()>;
+    /// [`EngineError::FileAlreadyExists`].
+    fn put(&self, path: &Url, data: Bytes, overwrite: bool) -> EngineResult<()>;
 
     /// Perform a HEAD request for the given file at a Url, returning the file metadata.
     ///
-    /// If the file does not exist, this must return an `Err` with [`Error::FileNotFound`].
-    fn head(&self, path: &Url) -> DeltaResult<FileMeta>;
+    /// If the file does not exist, this must return [`EngineError::FileNotFound`].
+    fn head(&self, path: &Url) -> EngineResult<FileMeta>;
 
     /// Delete the file at the given path.
     ///
     /// This operation is idempotent: deleting a path that does not exist should return `Ok(())`.
     /// For any other error, this must propagate the corresponding error.
-    fn delete(&self, path: &Url) -> DeltaResult<()>;
+    fn delete(&self, path: &Url) -> EngineResult<()>;
 }
 
 /// Provides JSON handling functionality to Delta Kernel.
@@ -661,7 +666,7 @@ pub trait JsonHandler: AsAny {
         &self,
         json_strings: Box<dyn EngineData>,
         output_schema: SchemaRef,
-    ) -> DeltaResult<Box<dyn EngineData>>;
+    ) -> EngineResult<Box<dyn EngineData>>;
 
     /// Read and parse the JSON format file at given locations and return the data as EngineData
     /// with the columns requested by physical schema. Note: The [`FileDataReadResultIterator`]
@@ -695,30 +700,30 @@ pub trait JsonHandler: AsAny {
         files: &[FileMeta],
         physical_schema: SchemaRef,
         predicate: Option<PredicateRef>,
-    ) -> DeltaResult<FileDataReadResultIterator>;
+    ) -> EngineResult<FileDataReadResultIterator>;
 
     /// Cancellation-aware variant of [`read_json_files`](Self::read_json_files).
     ///
     /// When `cancellation_token` is `Some`, an engine may race its I/O against the token and
-    /// terminate the returned iterator with [`Error::Cancelled`] once cancellation is observed,
+    /// terminate the returned iterator with [`EngineError::Cancelled`] once cancellation is
+    /// observed,
     /// rather than reading every file to completion.
     ///
-    /// The default implementation returns [`Error::Cancelled`] if the token is already cancelled
+    /// The default implementation returns [`EngineError::Cancelled`] if the token is already
+    /// cancelled
     /// and otherwise delegates to [`read_json_files`](Self::read_json_files), ignoring the token
     /// for the rest of the read. So an engine that does not override this stays source-compatible
     /// while still honoring an up-front cancellation; kernel additionally polls the token at
     /// action-batch boundaries. An engine that overrides this may assume kernel has already
     /// performed the pre-read check, and should focus on interrupting its in-flight I/O.
-    ///
-    /// [`Error::Cancelled`]: crate::Error::Cancelled
     fn read_json_files_with_cancellation(
         &self,
         files: &[FileMeta],
         physical_schema: SchemaRef,
         predicate: Option<PredicateRef>,
         cancellation_token: Option<CancellationTokenRef>,
-    ) -> DeltaResult<FileDataReadResultIterator> {
-        check_cancelled(cancellation_token.as_ref())?;
+    ) -> EngineResult<FileDataReadResultIterator> {
+        check_engine_cancelled(cancellation_token.as_ref())?;
         self.read_json_files(files, physical_schema, predicate)
     }
 
@@ -753,8 +758,9 @@ pub trait JsonHandler: AsAny {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::FileAlreadyExists`] when `overwrite` is false and the destination exists,
-    /// or another error when serialization or storage fails.
+    /// Preserve errors received from `data` unchanged. Wrap serialization or storage failures
+    /// produced by the writer as [`Error::Engine`], using
+    /// [`EngineError::FileAlreadyExists`] when `overwrite` is false and the destination exists.
     fn write_json_file(
         &self,
         path: &Url,
@@ -915,8 +921,8 @@ pub trait ParquetHandler: AsAny {
     ///   satisfy the predicate.
     ///
     /// # Returns
-    /// A [`DeltaResult`] containing a [`FileDataReadResultIterator`].
-    /// Each element of the iterator is a [`DeltaResult`] of [`EngineData`]. The [`EngineData`]
+    /// An [`EngineResult`] containing a [`FileDataReadResultIterator`].
+    /// Each element of the iterator is an [`EngineResult`] of [`EngineData`]. The [`EngineData`]
     /// contains rows from `files` after any predicate push-down and must match the provided
     /// `physical_schema`.
     ///
@@ -942,30 +948,30 @@ pub trait ParquetHandler: AsAny {
         files: &[FileMeta],
         physical_schema: SchemaRef,
         predicate: Option<PredicateRef>,
-    ) -> DeltaResult<FileDataReadResultIterator>;
+    ) -> EngineResult<FileDataReadResultIterator>;
 
     /// Cancellation-aware variant of [`read_parquet_files`](Self::read_parquet_files).
     ///
     /// When `cancellation_token` is `Some`, an engine may race its I/O against the token and
-    /// terminate the returned iterator with [`Error::Cancelled`] once cancellation is observed,
+    /// terminate the returned iterator with [`EngineError::Cancelled`] once cancellation is
+    /// observed,
     /// rather than reading every file to completion.
     ///
-    /// The default implementation returns [`Error::Cancelled`] if the token is already cancelled
+    /// The default implementation returns [`EngineError::Cancelled`] if the token is already
+    /// cancelled
     /// and otherwise delegates to [`read_parquet_files`](Self::read_parquet_files), ignoring the
     /// token for the rest of the read. So an engine that does not override this stays
     /// source-compatible while still honoring an up-front cancellation; kernel additionally polls
     /// the token at action-batch boundaries. An engine that overrides this may assume kernel has
     /// already performed the pre-read check, and should focus on interrupting its in-flight I/O.
-    ///
-    /// [`Error::Cancelled`]: crate::Error::Cancelled
     fn read_parquet_files_with_cancellation(
         &self,
         files: &[FileMeta],
         physical_schema: SchemaRef,
         predicate: Option<PredicateRef>,
         cancellation_token: Option<CancellationTokenRef>,
-    ) -> DeltaResult<FileDataReadResultIterator> {
-        check_cancelled(cancellation_token.as_ref())?;
+    ) -> EngineResult<FileDataReadResultIterator> {
+        check_engine_cancelled(cancellation_token.as_ref())?;
         self.read_parquet_files(files, physical_schema, predicate)
     }
 
@@ -998,7 +1004,8 @@ pub trait ParquetHandler: AsAny {
     ///
     /// # Returns
     ///
-    /// A [`DeltaResult`] indicating success or failure.
+    /// A [`DeltaResult`] indicating success or failure. Preserve errors received from `data`
+    /// unchanged. Wrap failures produced by the writer as [`Error::Engine`].
     ///
     /// [`StructField`]: crate::schema::StructField
     /// [`ColumnMetadataKey::ColumnMappingId`]: crate::schema::ColumnMetadataKey::ColumnMappingId
@@ -1026,8 +1033,8 @@ pub trait ParquetHandler: AsAny {
     ///
     /// # Returns
     ///
-    /// A [`DeltaResult`] containing a [`ParquetFooter`] with the Parquet file's metadata, including
-    /// the schema converted to Delta Kernel's format.
+    /// An [`EngineResult`] containing a [`ParquetFooter`] with the Parquet file's metadata,
+    /// including the schema converted to Delta Kernel's format.
     ///
     /// # Field IDs
     ///
@@ -1046,27 +1053,26 @@ pub trait ParquetHandler: AsAny {
     /// [`StructField`]: crate::schema::StructField
     /// [`StructField::get_config_value`]: crate::schema::StructField::get_config_value
     /// [`ColumnMetadataKey::ParquetFieldId`]: crate::schema::ColumnMetadataKey::ParquetFieldId
-    fn read_parquet_footer(&self, file: &FileMeta) -> DeltaResult<ParquetFooter>;
+    fn read_parquet_footer(&self, file: &FileMeta) -> EngineResult<ParquetFooter>;
 
     /// Cancellation-aware variant of [`read_parquet_footer`](Self::read_parquet_footer).
     ///
     /// When `cancellation_token` is `Some`, an engine may race the footer read against the token
-    /// and return [`Error::Cancelled`] once cancellation is observed.
+    /// and return [`EngineError::Cancelled`] once cancellation is observed.
     ///
-    /// The default implementation returns [`Error::Cancelled`] if the token is already cancelled
+    /// The default implementation returns [`EngineError::Cancelled`] if the token is already
+    /// cancelled
     /// and otherwise delegates to [`read_parquet_footer`](Self::read_parquet_footer), ignoring the
     /// token for the rest of the read. So an engine that does not override this stays
     /// source-compatible while still honoring an up-front cancellation. An engine that overrides
     /// this may assume kernel has already performed the pre-read check, and should focus on
     /// interrupting its in-flight I/O.
-    ///
-    /// [`Error::Cancelled`]: crate::Error::Cancelled
     fn read_parquet_footer_with_cancellation(
         &self,
         file: &FileMeta,
         cancellation_token: Option<CancellationTokenRef>,
-    ) -> DeltaResult<ParquetFooter> {
-        check_cancelled(cancellation_token.as_ref())?;
+    ) -> EngineResult<ParquetFooter> {
+        check_engine_cancelled(cancellation_token.as_ref())?;
         self.read_parquet_footer(file)
     }
 }

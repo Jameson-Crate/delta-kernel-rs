@@ -14,7 +14,7 @@ use itertools::Itertools;
 use crate::log_replay::{ActionsBatch, ParallelLogReplayProcessor};
 use crate::scan::CHECKPOINT_READ_SCHEMA;
 use crate::schema::SchemaRef;
-use crate::{DeltaResult, Engine, EngineData, FileMeta};
+use crate::{DeltaResult, Engine, EngineData, Error, FileMeta};
 
 /// Processes checkpoint leaf files in parallel using a shared processor.
 ///
@@ -56,7 +56,11 @@ impl<P: ParallelLogReplayProcessor> ParallelPhase<P> {
         let leaf_checkpoint_reader = engine
             .parquet_handler()
             .read_parquet_files(&leaf_files, read_schema, None)?
-            .map_ok(|batch| ActionsBatch::new(batch, false));
+            .map(|result| {
+                result
+                    .map(|batch| ActionsBatch::new(batch, false))
+                    .map_err(Error::from)
+            });
         Ok(Self {
             processor,
             leaf_checkpoint_reader: Box::new(leaf_checkpoint_reader),

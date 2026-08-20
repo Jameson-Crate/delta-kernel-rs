@@ -15,19 +15,18 @@ use delta_kernel::engine::arrow_utils::{
 };
 use delta_kernel::engine_data::FilteredEngineData;
 use delta_kernel::object_store::path::Path;
-use delta_kernel::object_store::{
-    self, DynObjectStore, GetResultPayload, ObjectStoreExt as _, PutMode,
-};
+use delta_kernel::object_store::{DynObjectStore, GetResultPayload, ObjectStoreExt as _, PutMode};
 use delta_kernel::schema::SchemaRef;
 use delta_kernel::{
-    CancellationTokenRef, DeltaResult, DeltaResultIterator, EngineData, Error,
-    FileDataReadResultIterator, FileMeta, FileSize, JsonHandler, PredicateRef,
+    CancellationTokenRef, DeltaResult, DeltaResultIterator, EngineData, EngineError, EngineResult,
+    Error, FileDataReadResultIterator, FileMeta, FileSize, JsonHandler, PredicateRef,
 };
 use futures::stream::{self, BoxStream};
 use futures::{ready, StreamExt, TryStreamExt};
 use url::Url;
 
 use crate::executor::TaskExecutor;
+use crate::{delta_to_engine_error, external_engine_error, object_store_engine_error};
 
 #[derive(Debug)]
 pub struct DefaultJsonHandler<E: TaskExecutor> {
@@ -91,16 +90,19 @@ async fn read_json_files_impl(
     _predicate: Option<PredicateRef>,
     batch_size: usize,
     buffer_size: usize,
-) -> DeltaResult<BoxStream<'static, DeltaResult<Box<dyn EngineData>>>> {
+) -> EngineResult<BoxStream<'static, EngineResult<Box<dyn EngineData>>>> {
     if files.is_empty() {
         return Ok(Box::pin(stream::empty()));
     }
 
     // Build Arrow schema from only the real JSON columns, omitting any metadata columns
     // (e.g. FilePath) that the JSON reader cannot populate from the file content.
-    let json_arrow_schema = Arc::new(json_arrow_schema(&physical_schema)?);
+    let json_arrow_schema =
+        Arc::new(json_arrow_schema(&physical_schema).map_err(delta_to_engine_error)?);
     // Build the reorder index vec once; apply it to every batch via reorder_struct_array.
-    let reorder_indices: Arc<[_]> = build_json_reorder_indices(&physical_schema)?.into();
+    let reorder_indices: Arc<[_]> = build_json_reorder_indices(&physical_schema)
+        .map_err(delta_to_engine_error)?
+        .into();
 
     // An iterator of futures that open each file and post-process each resulting batch.
     let file_futures = files.into_iter().map(move |file| {
@@ -112,9 +114,12 @@ async fn read_json_files_impl(
             let batch_stream = open_json_file(store, json_arrow_schema, batch_size, file).await?;
             // Re-insert synthesized metadata columns (e.g. file path) at their schema positions.
             let tagged = batch_stream
-                .map(move |result| fixup_json_read(result?, &reorder_indices, &file_path))
+                .map(move |result| {
+                    fixup_json_read(result?, &reorder_indices, &file_path)
+                        .map_err(delta_to_engine_error)
+                })
                 .boxed();
-            Ok::<_, Error>(tagged)
+            Ok::<_, EngineError>(tagged)
         }
     });
 
@@ -142,12 +147,11 @@ async fn write_json_file_impl(
         PutMode::Create
     };
 
-    let path = Path::from_url_path(path.path())?;
+    let path = Path::from_url_path(path.path())
+        .map_err(external_engine_error)
+        .map_err(Error::Engine)?;
     let result = store.put_opts(&path, buffer.into(), put_mode.into()).await;
-    result.map_err(|e| match e {
-        object_store::Error::AlreadyExists { .. } => Error::FileAlreadyExists(path.to_string()),
-        e => e.into(),
-    })?;
+    result.map_err(|error| Error::Engine(object_store_engine_error(error)))?;
     Ok(size)
 }
 
@@ -156,8 +160,8 @@ impl<E: TaskExecutor> JsonHandler for DefaultJsonHandler<E> {
         &self,
         json_strings: Box<dyn EngineData>,
         output_schema: SchemaRef,
-    ) -> DeltaResult<Box<dyn EngineData>> {
-        arrow_parse_json(json_strings, output_schema)
+    ) -> EngineResult<Box<dyn EngineData>> {
+        arrow_parse_json(json_strings, output_schema).map_err(delta_to_engine_error)
     }
 
     fn read_json_files(
@@ -165,7 +169,7 @@ impl<E: TaskExecutor> JsonHandler for DefaultJsonHandler<E> {
         files: &[FileMeta],
         physical_schema: SchemaRef,
         predicate: Option<PredicateRef>,
-    ) -> DeltaResult<FileDataReadResultIterator> {
+    ) -> EngineResult<FileDataReadResultIterator> {
         self.read_json_files_with_cancellation(files, physical_schema, predicate, None)
     }
 
@@ -175,7 +179,7 @@ impl<E: TaskExecutor> JsonHandler for DefaultJsonHandler<E> {
         physical_schema: SchemaRef,
         predicate: Option<PredicateRef>,
         cancellation_token: Option<CancellationTokenRef>,
-    ) -> DeltaResult<FileDataReadResultIterator> {
+    ) -> EngineResult<FileDataReadResultIterator> {
         let future = read_json_files_impl(
             self.store.clone(),
             files.to_vec(),
@@ -198,10 +202,18 @@ impl<E: TaskExecutor> JsonHandler for DefaultJsonHandler<E> {
         data: DeltaResultIterator<'_, FilteredEngineData>,
         overwrite: bool,
     ) -> DeltaResult<FileSize> {
+        let mut buffer = Vec::new();
+        for chunk in data {
+            let chunk = chunk?;
+            let bytes =
+                to_json_bytes(std::iter::once(Ok(chunk))).map_err(crate::wrap_engine_error)?;
+            buffer.extend(bytes);
+        }
+
         self.task_executor.block_on(write_json_file_impl(
             self.store.clone(),
             path.clone(),
-            to_json_bytes(data)?,
+            buffer,
             overwrite,
         ))
     }
@@ -213,16 +225,18 @@ async fn open_json_file(
     schema: ArrowSchemaRef,
     batch_size: usize,
     file_meta: FileMeta,
-) -> DeltaResult<BoxStream<'static, DeltaResult<RecordBatch>>> {
-    let path = Path::from_url_path(file_meta.location.path())?;
-    let result = store.get(&path).await?;
+) -> EngineResult<BoxStream<'static, EngineResult<RecordBatch>>> {
+    let path = Path::from_url_path(file_meta.location.path()).map_err(external_engine_error)?;
+    let result = store.get(&path).await.map_err(object_store_engine_error)?;
     let builder = ReaderBuilder::new(schema)
         .with_batch_size(batch_size)
         .with_coerce_primitive(true);
     match result.payload {
         GetResultPayload::File(file, _) => {
-            let reader = builder.build(BufReader::new(file))?;
-            let reader = futures::stream::iter(reader).map_err(Error::from);
+            let reader = builder
+                .build(BufReader::new(file))
+                .map_err(external_engine_error)?;
+            let reader = futures::stream::iter(reader).map_err(external_engine_error);
 
             // Emit exactly one error, then stop the stream. We check seen_error BEFORE
             // updating it so the first error passes through, but subsequent items don't.
@@ -238,8 +252,8 @@ async fn open_json_file(
             Ok(reader.boxed())
         }
         GetResultPayload::Stream(s) => {
-            let mut decoder = builder.build_decoder()?;
-            let mut input = s.map_err(Error::from);
+            let mut decoder = builder.build_decoder().map_err(external_engine_error)?;
+            let mut input = s.map_err(object_store_engine_error);
             let mut buffered = Bytes::new();
             let s = futures::stream::poll_fn(move |cx| {
                 loop {
@@ -259,7 +273,7 @@ async fn open_json_file(
                     // should be included in the next call to [`Self::decode`]
                     let decoded = match decoder.decode(buffered.as_ref()) {
                         Ok(decoded) => decoded,
-                        Err(e) => return Poll::Ready(Some(Err(e.into()))),
+                        Err(e) => return Poll::Ready(Some(Err(external_engine_error(e)))),
                     };
 
                     let read = buffered.len();
@@ -269,7 +283,7 @@ async fn open_json_file(
                     }
                 }
 
-                Poll::Ready(decoder.flush().map_err(Error::from).transpose())
+                Poll::Ready(decoder.flush().map_err(external_engine_error).transpose())
             });
             Ok(s.boxed())
         }
@@ -288,6 +302,7 @@ mod tests {
     use delta_kernel::arrow::array::{Array, AsArray, Int32Array, RecordBatch, StringArray};
     use delta_kernel::arrow::datatypes::{DataType, Field, Schema as ArrowSchema};
     use delta_kernel::engine::arrow_data::{ArrowEngineData, EngineDataArrowExt as _};
+    use delta_kernel::object_store;
     use delta_kernel::object_store::local::LocalFileSystem;
     use delta_kernel::object_store::memory::InMemory;
     use delta_kernel::object_store::{
@@ -909,7 +924,7 @@ mod tests {
         } else {
             // Verify the second write fails with FileAlreadyExists error
             match result {
-                Err(Error::FileAlreadyExists(err_path)) => {
+                Err(Error::Engine(EngineError::FileAlreadyExists(err_path))) => {
                     assert_eq!(err_path, object_path.to_string());
                 }
                 _ => panic!("Expected FileAlreadyExists error, got: {result:?}"),
@@ -943,6 +958,22 @@ mod tests {
         assert_eq!(stored_meta.size, 0);
         assert!(stored_bytes.is_empty());
         Ok(())
+    }
+
+    #[test]
+    fn json_writer_preserves_input_iterator_error() {
+        let handler = DefaultJsonHandler::new(
+            Arc::new(InMemory::new()),
+            Arc::new(TokioBackgroundExecutor::new()),
+        );
+        let path = Url::parse("memory:///test/data.json").unwrap();
+        let data: DeltaResultIterator<'_, FilteredEngineData> = Box::new(std::iter::once(Err(
+            Error::MissingData("input batch".to_string()),
+        )));
+
+        let result = handler.write_json_file(&path, data, false);
+
+        assert!(matches!(result, Err(Error::MissingData(message)) if message == "input batch"));
     }
 
     // === JsonHandler contract tests ===

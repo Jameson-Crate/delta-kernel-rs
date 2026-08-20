@@ -45,9 +45,9 @@ use crate::unit_test_utils::{
     create_log_path_with_size, string_array_to_engine_data, Action,
 };
 use crate::{
-    DeltaResult, DeltaResultIteratorStatic, EngineData, FileDataReadResultIterator, FileMeta,
-    JsonHandler, ParquetFooter, ParquetHandler, Predicate, PredicateRef, RowVisitor,
-    StorageHandler,
+    DeltaResult, DeltaResultIteratorStatic, EngineData, EngineResult, Error,
+    FileDataReadResultIterator, FileMeta, JsonHandler, ParquetFooter, ParquetHandler, Predicate,
+    PredicateRef, RowVisitor, StorageHandler,
 };
 
 /// Processes sidecar files for the given checkpoint batch.
@@ -77,11 +77,11 @@ fn process_sidecars(
         .try_collect()?;
 
     // Read the sidecar files and return an iterator of sidecar file batches
-    Ok(Some(parquet_handler.read_parquet_files(
-        &sidecar_files,
-        checkpoint_read_schema,
-        meta_predicate,
-    )?))
+    Ok(Some(
+        parquet_handler
+            .read_parquet_files(&sidecar_files, checkpoint_read_schema, meta_predicate)?
+            .map(|result| result.map_err(Error::from)),
+    ))
 }
 
 // get an ObjectStore path for a checkpoint file, based on version, part number, and total number of
@@ -231,7 +231,7 @@ impl ParquetHandler for IgnorePredicateParquetHandler {
         files: &[FileMeta],
         physical_schema: SchemaRef,
         _predicate: Option<PredicateRef>,
-    ) -> DeltaResult<FileDataReadResultIterator> {
+    ) -> EngineResult<FileDataReadResultIterator> {
         self.0.read_parquet_files(files, physical_schema, None)
     }
 
@@ -243,7 +243,7 @@ impl ParquetHandler for IgnorePredicateParquetHandler {
         self.0.write_parquet_file(location, data)
     }
 
-    fn read_parquet_footer(&self, file: &FileMeta) -> DeltaResult<ParquetFooter> {
+    fn read_parquet_footer(&self, file: &FileMeta) -> EngineResult<ParquetFooter> {
         self.0.read_parquet_footer(file)
     }
 }

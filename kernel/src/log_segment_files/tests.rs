@@ -10,7 +10,7 @@ use crate::object_store::memory::InMemory;
 use crate::object_store::path::Path as ObjectPath;
 use crate::object_store::ObjectStoreExt as _;
 use crate::path::tests::multipart_checkpoint_name;
-use crate::{Engine as _, FileMeta};
+use crate::{Engine as _, EngineError, EngineResult, Error, FileMeta};
 
 // size markers used to identify commit sources in tests
 const FILESYSTEM_SIZE_MARKER: u64 = 10;
@@ -166,7 +166,7 @@ impl StorageHandler for CountingStorageHandler {
     fn list_from(
         &self,
         path: &Url,
-    ) -> DeltaResult<Box<dyn Iterator<Item = DeltaResult<FileMeta>>>> {
+    ) -> EngineResult<Box<dyn Iterator<Item = EngineResult<FileMeta>>>> {
         self.list_from_count.fetch_add(1, Ordering::Relaxed);
         let items_listed = self.items_listed.clone();
         let iter = self.inner.list_from(path)?;
@@ -178,24 +178,77 @@ impl StorageHandler for CountingStorageHandler {
     fn read_files(
         &self,
         _files: Vec<crate::FileSlice>,
-    ) -> DeltaResult<Box<dyn Iterator<Item = DeltaResult<bytes::Bytes>>>> {
+    ) -> EngineResult<Box<dyn Iterator<Item = EngineResult<bytes::Bytes>>>> {
         panic!("read_files should not be called during listing");
     }
 
-    fn put(&self, _path: &Url, _data: bytes::Bytes, _overwrite: bool) -> DeltaResult<()> {
+    fn put(&self, _path: &Url, _data: bytes::Bytes, _overwrite: bool) -> EngineResult<()> {
         panic!("put should not be called during listing");
     }
 
-    fn copy_atomic(&self, _src: &Url, _dest: &Url) -> DeltaResult<()> {
+    fn copy_atomic(&self, _src: &Url, _dest: &Url) -> EngineResult<()> {
         panic!("copy_atomic should not be called during listing");
     }
 
-    fn head(&self, _path: &Url) -> DeltaResult<crate::FileMeta> {
+    fn head(&self, _path: &Url) -> EngineResult<crate::FileMeta> {
         panic!("head should not be called during listing");
     }
 
-    fn delete(&self, _path: &Url) -> DeltaResult<()> {
+    fn delete(&self, _path: &Url) -> EngineResult<()> {
         panic!("delete should not be called during listing");
+    }
+}
+
+struct LazyErrorStorageHandler;
+
+impl StorageHandler for LazyErrorStorageHandler {
+    fn list_from(
+        &self,
+        _path: &Url,
+    ) -> EngineResult<Box<dyn Iterator<Item = EngineResult<FileMeta>>>> {
+        Ok(Box::new(std::iter::once(Err(EngineError::Generic(
+            "lazy listing failure".to_string(),
+        )))))
+    }
+
+    fn read_files(
+        &self,
+        _files: Vec<crate::FileSlice>,
+    ) -> EngineResult<Box<dyn Iterator<Item = EngineResult<bytes::Bytes>>>> {
+        panic!("read_files should not be called during listing");
+    }
+
+    fn put(&self, _path: &Url, _data: bytes::Bytes, _overwrite: bool) -> EngineResult<()> {
+        panic!("put should not be called during listing");
+    }
+
+    fn copy_atomic(&self, _src: &Url, _dest: &Url) -> EngineResult<()> {
+        panic!("copy_atomic should not be called during listing");
+    }
+
+    fn head(&self, _path: &Url) -> EngineResult<FileMeta> {
+        panic!("head should not be called during listing");
+    }
+
+    fn delete(&self, _path: &Url) -> EngineResult<()> {
+        panic!("delete should not be called during listing");
+    }
+}
+
+#[test]
+fn lazy_storage_item_error_is_wrapped_as_engine_error() {
+    let log_root = Url::parse("memory:///_delta_log/").unwrap();
+    let mut listed =
+        list_delta_log_from_storage(&LazyErrorStorageHandler, &log_root, 0, 0).unwrap();
+    let error = listed.next().unwrap().unwrap_err();
+    assert!(is_lazy_listing_engine_error(&error));
+}
+
+fn is_lazy_listing_engine_error(error: &Error) -> bool {
+    match error {
+        Error::Engine(EngineError::Generic(message)) => message == "lazy listing failure",
+        Error::Backtraced { source, .. } => is_lazy_listing_engine_error(source),
+        _ => false,
     }
 }
 
@@ -360,25 +413,25 @@ fn test_log_tail_covers_entire_range_empty_filesystem() {
         fn list_from(
             &self,
             _path: &Url,
-        ) -> DeltaResult<Box<dyn Iterator<Item = DeltaResult<FileMeta>>>> {
+        ) -> EngineResult<Box<dyn Iterator<Item = EngineResult<FileMeta>>>> {
             Ok(Box::new(std::iter::empty()))
         }
         fn read_files(
             &self,
             _files: Vec<crate::FileSlice>,
-        ) -> DeltaResult<Box<dyn Iterator<Item = DeltaResult<bytes::Bytes>>>> {
+        ) -> EngineResult<Box<dyn Iterator<Item = EngineResult<bytes::Bytes>>>> {
             panic!("read_files should not be called during listing");
         }
-        fn put(&self, _path: &Url, _data: bytes::Bytes, _overwrite: bool) -> DeltaResult<()> {
+        fn put(&self, _path: &Url, _data: bytes::Bytes, _overwrite: bool) -> EngineResult<()> {
             panic!("put should not be called during listing");
         }
-        fn copy_atomic(&self, _src: &Url, _dest: &Url) -> DeltaResult<()> {
+        fn copy_atomic(&self, _src: &Url, _dest: &Url) -> EngineResult<()> {
             panic!("copy_atomic should not be called during listing");
         }
-        fn head(&self, _path: &Url) -> DeltaResult<crate::FileMeta> {
+        fn head(&self, _path: &Url) -> EngineResult<crate::FileMeta> {
             panic!("head should not be called during listing");
         }
-        fn delete(&self, _path: &Url) -> DeltaResult<()> {
+        fn delete(&self, _path: &Url) -> EngineResult<()> {
             panic!("delete should not be called during listing");
         }
     }

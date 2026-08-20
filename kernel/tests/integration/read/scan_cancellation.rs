@@ -1,6 +1,6 @@
 //! Integration coverage for `ScanBuilder::with_cancellation_token`: a cancelled scan must
-//! surface `Error::Cancelled` through the real Default Engine and can never be mistaken for a
-//! complete listing.
+//! surface a classified cancellation error through the real Default Engine and can never be
+//! mistaken for a complete listing.
 
 use std::sync::Arc;
 
@@ -8,7 +8,7 @@ use delta_kernel::object_store::memory::InMemory;
 use delta_kernel::object_store::path::Path;
 use delta_kernel::object_store::ObjectStoreExt as _;
 use delta_kernel::scan::StatsOptions;
-use delta_kernel::{CancellationTokenRef, Error, Snapshot};
+use delta_kernel::{CancellationTokenRef, EngineError, Error, Snapshot};
 use rstest::rstest;
 use test_utils::delta_kernel_default_engine::DefaultEngineBuilder;
 use test_utils::{
@@ -43,8 +43,8 @@ async fn json_only_table() -> Result<(Arc<InMemory>, &'static str), Box<dyn std:
     Ok((storage, table_root))
 }
 
-// A scan whose builder was given an already-cancelled token yields exactly one
-// `Error::Cancelled` and then ends -- it never produces a (partial) complete-looking listing.
+// A scan whose builder was given an already-cancelled token yields exactly one classified
+// cancellation error and then ends -- it never produces a partial, complete-looking listing.
 // Parametrized over stats mode because a predicate/stats scan takes a different replay path
 // (checkpoint parquet reads + stats parsing) than the JSON-only default, and both must honor the
 // token: `None` is the plain default (no `with_stats` call), `Some` opts into struct stats.
@@ -66,10 +66,10 @@ async fn precancelled_scan_yields_cancelled(
     }
     let scan = builder.build()?;
 
-    // Cancellation surfaces as `Error::Cancelled`, never as a complete listing. It may arrive
-    // either from the eager setup reads that `scan_metadata` performs (returning `Err` directly)
-    // or as the iterator's terminal item -- assert whichever, and that no successful batch and no
-    // silent `None`-only stream is ever produced.
+    // Cancellation surfaces as an error, never as a complete listing. It may arrive either from
+    // the eager setup reads that `scan_metadata` performs (returning `Err` directly) or as the
+    // iterator's terminal item -- assert whichever, and that no successful batch and no silent
+    // `None`-only stream is ever produced.
     assert_cancelled(scan.scan_metadata(&engine));
     Ok(())
 }
@@ -82,11 +82,12 @@ fn assert_cancelled<
     result: delta_kernel::DeltaResult<I>,
 ) {
     match result {
-        Err(Error::Cancelled) => {}
+        Err(error) if is_cancelled(&error) => {}
         Err(other) => panic!("expected Cancelled, got {other:?}"),
         Ok(mut iter) => {
+            let first = iter.next();
             assert!(
-                matches!(iter.next(), Some(Err(Error::Cancelled))),
+                matches!(first, Some(Err(ref error)) if is_cancelled(error)),
                 "cancelled scan must yield Err(Cancelled), never an Ok batch or bare None"
             );
             assert!(
@@ -94,6 +95,14 @@ fn assert_cancelled<
                 "iterator must fuse after cancellation"
             );
         }
+    }
+}
+
+fn is_cancelled(error: &Error) -> bool {
+    match error {
+        Error::Cancelled | Error::Engine(EngineError::Cancelled) => true,
+        Error::Backtraced { source, .. } => is_cancelled(source),
+        _ => false,
     }
 }
 
@@ -146,7 +155,10 @@ async fn mid_stream_cancellation_yields_exactly_one_error() -> Result<(), Box<dy
 
     token.cancel();
 
-    assert!(matches!(iter.next(), Some(Err(Error::Cancelled))));
+    assert!(matches!(
+        iter.next(),
+        Some(Err(ref error)) if is_cancelled(error)
+    ));
     assert!(
         iter.next().is_none(),
         "iterator must fuse after the single error"

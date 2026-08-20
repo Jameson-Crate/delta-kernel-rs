@@ -16,8 +16,8 @@ use crate::{DeltaResult, Engine, Error};
 /// - `delta.enableInCommitTimestamps` is `true` but `inCommitTimestampOpt` is absent.
 ///
 /// Per the Delta protocol, writers MUST NOT overwrite existing CRC files, so this always
-/// writes with `overwrite = false`. If the file already exists, returns
-/// `Err(Error::FileAlreadyExists)`.
+/// writes with `overwrite = false`. If the file already exists, returns an engine failure
+/// classified as [`crate::EngineError::FileAlreadyExists`].
 pub(crate) fn try_write_crc_file(engine: &dyn Engine, path: &Url, crc: &Crc) -> DeltaResult<()> {
     require!(
         crc.file_stats_state.is_complete(),
@@ -41,9 +41,9 @@ pub(crate) fn try_write_crc_file(engine: &dyn Engine, path: &Url, crc: &Crc) -> 
         )
     );
     let data = serde_json::to_vec(crc)?;
-    engine
+    Ok(engine
         .storage_handler()
-        .put(path, data.into(), false /* overwrite */)
+        .put(path, data.into(), false /* overwrite */)?)
 }
 
 #[cfg(test)]
@@ -233,7 +233,7 @@ mod tests {
 
         // Second write should fail (never overwrites)
         let result = try_write_crc_file(&engine, crc_path.location.as_url(), &crc);
-        assert!(matches!(result, Err(Error::FileAlreadyExists(_))));
+        assert!(result.unwrap_err().is_file_already_exists());
     }
 
     #[test]

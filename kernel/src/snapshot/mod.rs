@@ -1007,7 +1007,7 @@ impl Snapshot {
                 )?);
                 Ok((ChecksumWriteResult::Written, new_snapshot))
             }
-            Err(Error::FileAlreadyExists(_)) => {
+            Err(error) if error.is_file_already_exists() => {
                 info!(
                     "Another writer beat us to writing CRC file at {}",
                     crc_path.location
@@ -1195,7 +1195,7 @@ impl Snapshot {
 
         let info = match write_result {
             Ok(info) => info,
-            Err(Error::FileAlreadyExists(_)) => {
+            Err(error) if error.is_file_already_exists() => {
                 // NOTE: Per write_parquet_file's documentation, it should silently overwrite
                 // existing files, so we log a warning but still return the correct result.
                 warn!(

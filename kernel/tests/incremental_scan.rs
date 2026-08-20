@@ -23,7 +23,8 @@ use delta_kernel::object_store::ObjectStoreExt;
 use delta_kernel::scan::state::ScanFile;
 use delta_kernel::schema::{schema_ref, StructType};
 use delta_kernel::{
-    Engine, EvaluationHandler, JsonHandler, ParquetHandler, Snapshot, SnapshotRef, StorageHandler,
+    Engine, EngineError, Error, EvaluationHandler, JsonHandler, ParquetHandler, Snapshot,
+    SnapshotRef, StorageHandler,
 };
 use rstest::rstest;
 use test_utils::delta_kernel_default_engine::executor::tokio::{
@@ -446,7 +447,7 @@ async fn missing_commit_file_surfaces_error_during_iteration(
         Err(e) => e,
     };
     assert!(
-        matches!(err, delta_kernel::Error::FileNotFound(_)),
+        is_engine_file_not_found(&err),
         "expected FileNotFound, got {err:?}"
     );
 
@@ -459,6 +460,14 @@ async fn missing_commit_file_surfaces_error_during_iteration(
     );
 
     Ok(())
+}
+
+fn is_engine_file_not_found(error: &Error) -> bool {
+    match error {
+        Error::Engine(EngineError::FileNotFound(_)) => true,
+        Error::Backtraced { source, .. } => is_engine_file_not_found(source),
+        _ => false,
+    }
 }
 
 // Caller errors: a base_version that is not strictly less than the target snapshot's version

@@ -17,7 +17,7 @@ use delta_kernel::transaction::create_table::create_table;
 use delta_kernel::transaction::data_layout::DataLayout;
 use delta_kernel::transaction::Transaction;
 use delta_kernel::{
-    DeltaResult, DeltaResultIteratorStatic, Engine, EngineData, EvaluationHandler,
+    DeltaResult, DeltaResultIteratorStatic, Engine, EngineData, EngineResult, EvaluationHandler,
     FileDataReadResultIterator, FileMeta, FileStats, JsonHandler, ParquetFooter, ParquetHandler,
     PredicateRef, StorageHandler, Version,
 };
@@ -2379,7 +2379,7 @@ impl ParquetHandler for NoParquetReadsHandler {
         _files: &[FileMeta],
         _physical_schema: SchemaRef,
         _predicate: Option<PredicateRef>,
-    ) -> DeltaResult<FileDataReadResultIterator> {
+    ) -> EngineResult<FileDataReadResultIterator> {
         panic!("read_parquet_files called: the checkpoint must not be read on the rooted path");
     }
 
@@ -2391,7 +2391,7 @@ impl ParquetHandler for NoParquetReadsHandler {
         self.inner.write_parquet_file(location, data)
     }
 
-    fn read_parquet_footer(&self, file: &FileMeta) -> DeltaResult<ParquetFooter> {
+    fn read_parquet_footer(&self, file: &FileMeta) -> EngineResult<ParquetFooter> {
         self.inner.read_parquet_footer(file)
     }
 }

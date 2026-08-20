@@ -19,7 +19,7 @@ use delta_kernel::table_features::ColumnMappingMode;
 use delta_kernel::transaction::create_table::create_table;
 use delta_kernel::transaction::data_layout::DataLayout;
 use delta_kernel::transaction::{Transaction, WriteState};
-use delta_kernel::{DeltaResult, Error as KernelError, Snapshot};
+use delta_kernel::{DeltaResult, EngineError, Error as KernelError, Snapshot};
 use itertools::Itertools;
 use rstest::rstest;
 use serde_json::{json, Deserializer};
@@ -381,16 +381,14 @@ async fn test_append_invalid_schema() -> Result<(), Box<dyn std::error::Error>> 
         });
 
         let mut add_files_metadata = futures::future::join_all(tasks).await.into_iter().flatten();
-        assert!(add_files_metadata.all(|res| match res {
-            Err(KernelError::Arrow(ArrowError::InvalidArgumentError(_))) => true,
-            Err(KernelError::Backtraced { source, .. })
+        assert!(add_files_metadata.all(|res| matches!(
+            res,
+            Err(KernelError::Engine(EngineError::External(source)))
                 if matches!(
-                    &*source,
-                    KernelError::Arrow(ArrowError::InvalidArgumentError(_))
-                ) =>
-                true,
-            _ => false,
-        }));
+                    source.downcast_ref::<KernelError>(),
+                    Some(KernelError::Arrow(ArrowError::InvalidArgumentError(_)))
+                )
+        )));
     }
     Ok(())
 }

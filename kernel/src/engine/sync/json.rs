@@ -12,11 +12,12 @@ use crate::engine::arrow_utils::{
     to_json_bytes,
 };
 use crate::engine_data::FilteredEngineData;
+use crate::error::to_engine_error;
 use crate::object_store::DynObjectStore;
 use crate::schema::SchemaRef;
 use crate::{
-    DeltaResult, DeltaResultIterator, EngineData, Error, FileDataReadResultIterator, FileMeta,
-    FileSize, JsonHandler, PredicateRef,
+    DeltaResult, DeltaResultIterator, EngineData, EngineError, EngineResult,
+    FileDataReadResultIterator, FileMeta, FileSize, JsonHandler, PredicateRef,
 };
 
 pub(crate) struct SyncJsonHandler {
@@ -50,7 +51,7 @@ impl JsonHandler for SyncJsonHandler {
         files: &[FileMeta],
         schema: SchemaRef,
         predicate: Option<PredicateRef>,
-    ) -> DeltaResult<FileDataReadResultIterator> {
+    ) -> EngineResult<FileDataReadResultIterator> {
         let iter = read_files_arrow(
             self.store.as_ref(),
             files,
@@ -58,15 +59,18 @@ impl JsonHandler for SyncJsonHandler {
             predicate,
             try_create_from_json,
         );
-        Ok(Box::new(iter.map(|data| Ok(Box::new(data?) as _))))
+        Ok(Box::new(iter.map(|data| {
+            data.map(|data| Box::new(data) as Box<dyn EngineData>)
+                .map_err(to_engine_error)
+        })))
     }
 
     fn parse_json(
         &self,
         json_strings: Box<dyn EngineData>,
         output_schema: SchemaRef,
-    ) -> DeltaResult<Box<dyn EngineData>> {
-        arrow_parse_json(json_strings, output_schema)
+    ) -> EngineResult<Box<dyn EngineData>> {
+        arrow_parse_json(json_strings, output_schema).map_err(to_engine_error)
     }
 
     fn write_json_file(
@@ -75,9 +79,12 @@ impl JsonHandler for SyncJsonHandler {
         data: DeltaResultIterator<'_, FilteredEngineData>,
         overwrite: bool,
     ) -> DeltaResult<FileSize> {
-        let buf = to_json_bytes(data)?;
+        let data = data.collect::<DeltaResult<Vec<_>>>()?;
+        let buf = to_json_bytes(data.into_iter().map(Ok))
+            .map_err(|error| crate::Error::Engine(to_engine_error(error)))?;
         let size = buf.len() as FileSize;
-        put_bytes(self.store.as_ref(), path, buf.into(), overwrite)?;
+        put_bytes(self.store.as_ref(), path, buf.into(), overwrite)
+            .map_err(|error| crate::Error::Engine(to_engine_error(error)))?;
         Ok(size)
     }
 }
@@ -159,7 +166,10 @@ mod tests {
             assert_eq!(json, vec![json!({"dog": "seb"}), json!({"dog": "tia"})]);
         } else {
             // Verify the second write fails with FileAlreadyExists error
-            assert!(matches!(result, Err(Error::FileAlreadyExists(_))));
+            assert!(matches!(
+                result,
+                Err(crate::Error::Engine(EngineError::FileAlreadyExists(_)))
+            ));
         }
 
         Ok(())

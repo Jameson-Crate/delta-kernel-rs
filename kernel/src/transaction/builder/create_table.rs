@@ -46,7 +46,7 @@ use crate::transaction::create_table::CreateTableTransaction;
 use crate::transaction::data_layout::DataLayout;
 use crate::transaction::Transaction;
 use crate::utils::{current_time_ms, try_parse_uri};
-use crate::{DeltaResult, Engine, Error, StorageHandler};
+use crate::{DeltaResult, Engine, EngineError, Error, StorageHandler};
 
 /// Table features allowed to be enabled via `delta.feature.*=supported` during CREATE TABLE.
 ///
@@ -157,17 +157,17 @@ fn ensure_table_does_not_exist(
                 Some(Ok(_)) => Err(Error::generic(format!(
                     "Table already exists at path: {table_path}"
                 ))),
-                Some(Err(Error::FileNotFound(_))) | None => {
+                Some(Err(EngineError::FileNotFound(_))) | None => {
                     // Path doesn't exist or empty - OK for new table
                     Ok(())
                 }
                 Some(Err(e)) => {
                     // Real error (permissions, network, etc.) - propagate
-                    Err(e)
+                    Err(e.into())
                 }
             }
         }
-        Err(Error::FileNotFound(_)) => {
+        Err(EngineError::FileNotFound(_)) => {
             // Directory doesn't exist - this is expected for a new table.
             // The storage layer will create the full path (including _delta_log/)
             // when the commit writes the first log file via write_json_file().
@@ -175,7 +175,7 @@ fn ensure_table_does_not_exist(
         }
         Err(e) => {
             // Real error - propagate
-            Err(e)
+            Err(e.into())
         }
     }
 }

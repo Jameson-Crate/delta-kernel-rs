@@ -4,15 +4,16 @@
 //! *runtime-agnostic*: a caller supplies a [`CancellationToken`] (via
 //! [`ScanBuilder::with_cancellation_token`](crate::scan::ScanBuilder::with_cancellation_token)),
 //! Kernel polls it at action-batch boundaries, and cancellation-aware [`Engine`](crate::Engine)
-//! reads may race their I/O against it. Cancellation is always surfaced as
-//! [`Error::Cancelled`] -- never as normal iterator exhaustion -- so a partial listing can never be
-//! mistaken for a complete one.
+//! reads may race their I/O against it. Kernel polling produces [`Error::Cancelled`], while an
+//! engine-produced cancellation is wrapped as [`Error::Engine`] containing
+//! [`EngineError::Cancelled`]. Neither path uses normal iterator exhaustion, so a partial listing
+//! can never be mistaken for a complete one.
 
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use crate::{DeltaResult, Error};
+use crate::{DeltaResult, EngineError, EngineResult, Error};
 
 /// A shared, thread-safe cancellation token. Held as an `Arc` because the lazy scan iterator and
 /// the engine reads it drives can outlive the builder call and run on other threads.
@@ -23,13 +24,10 @@ pub type CancellationTokenRef = Arc<dyn CancellationToken>;
 /// Kernel taking on any async-runtime dependency.
 pub type CancelledFuture<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
 
-/// Returns `Err(Error::Cancelled)` if `token` is present and already cancelled, else `Ok(())`.
-///
-/// Used to fail fast before starting a setup/read operation (e.g. a footer read or a sidecar
-/// listing) so cancelled work is not begun.
-pub(crate) fn check_cancelled(token: Option<&CancellationTokenRef>) -> DeltaResult<()> {
+/// Returns [`EngineError::Cancelled`] if `token` is present and already cancelled.
+pub(crate) fn check_engine_cancelled(token: Option<&CancellationTokenRef>) -> EngineResult<()> {
     match token {
-        Some(t) if t.is_cancelled() => Err(Error::Cancelled),
+        Some(t) if t.is_cancelled() => Err(EngineError::Cancelled),
         _ => Ok(()),
     }
 }
@@ -59,9 +57,9 @@ pub trait CancellationToken: Send + Sync {
 /// [`Error::Cancelled`] rather than silent truncation.
 ///
 /// Before each pull, the token is polled: if cancelled, one `Err(Error::Cancelled)` is yielded
-/// and every subsequent call returns `None` (the iterator is fused). An `Err(Error::Cancelled)`
-/// arriving from the inner iterator (e.g. a cancellation-aware engine interrupting a read) fuses
-/// it the same way, so a token shared with the engine still yields exactly one terminal error.
+/// and every subsequent call returns `None` (the iterator is fused). A classified cancellation
+/// arriving from the inner iterator, including an engine-produced one, fuses it the same way, so a
+/// token shared with the engine still yields exactly one terminal error.
 /// With no token, or before cancellation, items pass through unchanged. This is deliberately
 /// **not** `take_while`, which would end the iterator with `None` and make a cancelled listing
 /// look complete.
@@ -101,7 +99,7 @@ where
         // A cancellation-aware engine can itself surface `Err(Cancelled)` from an interrupted
         // read. Fuse on it so the composed pipeline still yields exactly one terminal error
         // rather than this layer re-injecting a second one on the next poll.
-        if matches!(item, Some(Err(Error::Cancelled))) {
+        if matches!(&item, Some(Err(error)) if error.is_cancelled()) {
             self.done = true;
         }
         item
@@ -197,12 +195,28 @@ mod tests {
     }
 
     #[test]
-    fn check_cancelled_reports_state() {
+    fn inner_engine_cancelled_error_fuses_without_double_emit() {
+        let token: CancellationTokenRef = Arc::new(TestToken::default());
+        let inner = vec![Ok(0), Err(Error::Engine(EngineError::Cancelled)), Ok(99)].into_iter();
+        let mut iter = CancellableIterator::new(inner, Some(token));
+        assert!(matches!(iter.next(), Some(Ok(0))));
+        assert!(matches!(
+            iter.next(),
+            Some(Err(Error::Engine(EngineError::Cancelled)))
+        ));
+        assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn check_engine_cancelled_reports_state() {
         let token = Arc::new(TestToken::default());
         let ct: CancellationTokenRef = token.clone();
-        assert!(check_cancelled(Some(&ct)).is_ok());
-        assert!(check_cancelled(None).is_ok());
+        assert!(check_engine_cancelled(Some(&ct)).is_ok());
+        assert!(check_engine_cancelled(None).is_ok());
         token.cancel();
-        assert!(matches!(check_cancelled(Some(&ct)), Err(Error::Cancelled)));
+        assert!(matches!(
+            check_engine_cancelled(Some(&ct)),
+            Err(EngineError::Cancelled)
+        ));
     }
 }
