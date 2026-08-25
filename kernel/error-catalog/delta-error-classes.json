@@ -1,0 +1,21 @@
+{
+  "DELTA_INVALID_CDC_RANGE": {
+    "message": [
+      "CDC range from start <start> to end <end> was invalid. End cannot be before start."
+    ],
+    "sqlState": "22003"
+  },
+  "DELTA_INVALID_PARTITION_COLUMN_TYPE": {
+    "message": [
+      "Using column <name> of type <dataType> as a partition column is not supported."
+    ],
+    "sqlState": "42996"
+  },
+  "DELTA_VERSIONS_NOT_CONTIGUOUS": {
+    "message": [
+      "Versions (<versionList>) are not contiguous. ",
+      "A gap in the delta log between versions <startVersion> and <endVersion> was detected while trying to load version <versionToLoad>."
+    ],
+    "sqlState": "KD00C"
+  }
+}

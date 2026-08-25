@@ -13,6 +13,34 @@ use crate::schema::{DataType, StructType};
 use crate::table_properties::ParseIntervalError;
 use crate::Version;
 
+mod delta_error;
+
+pub use delta_error::{DeltaError, DeltaErrorCondition, DeltaErrorParameter};
+
+/// Prototype API for exposing only structured Delta errors at public boundaries.
+///
+/// This facade is additive: the existing [`super::DeltaResult`] remains unchanged because it is
+/// also the result type of engine callbacks and internal control-flow checks. Adopting option 2
+/// globally requires separating engine results and migrating those boundaries first.
+pub mod v2 {
+    use super::{DeltaError, DeltaResult as LegacyDeltaResult};
+
+    /// A result whose error is always a structured [`DeltaError`].
+    pub type DeltaResult<T> = std::result::Result<T, DeltaError>;
+
+    /// Converts a legacy kernel result into the option 2 structured-error boundary.
+    ///
+    /// Existing structured errors retain their condition and parameters. Unmigrated legacy errors
+    /// become the generic kernel-owned fallback and remain available through the error's source.
+    ///
+    /// # Errors
+    ///
+    /// Returns the structured form of any error in `result`.
+    pub fn into_delta_result<T>(result: LegacyDeltaResult<T>) -> DeltaResult<T> {
+        result.map_err(DeltaError::from)
+    }
+}
+
 /// Details of a failed conversion from a scalar into a Rust value.
 ///
 /// Conversion code adds path elements as an error unwinds, producing a path from the outermost
@@ -78,7 +106,7 @@ pub(crate) fn add_scalar_path_context(error: Error, element: impl Into<String>) 
     }
 }
 
-/// A [`std::result::Result`] that has the kernel [`Error`] as the error variant
+/// A [`std::result::Result`] that has the kernel [`Error`] as the error variant.
 pub type DeltaResult<T, E = Error> = std::result::Result<T, E>;
 
 /// A boxed, `Send` iterator of [`DeltaResult<T>`] items.
@@ -104,6 +132,10 @@ pub enum Error {
         source: Box<Self>,
         backtrace: Box<Backtrace>,
     },
+
+    /// A structured Delta error carried through an unmigrated internal result boundary.
+    #[error(transparent)]
+    Delta(#[from] DeltaError),
 
     /// An error performing operations on arrow data
     #[cfg(feature = "default-engine-base")]
