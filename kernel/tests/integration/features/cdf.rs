@@ -434,9 +434,26 @@ fn false_data_change_is_ignored() -> DeltaResult<()> {
 #[test]
 fn invalid_range_end_before_start() {
     let res = read_cdf_for_table("cdf-table-simple", 1, 0, None);
-    let expected_msg =
-        "Failed to build LogSegment: start_version cannot be greater than end_version";
-    assert!(matches!(res, Err(Error::Generic(msg)) if msg == expected_msg));
+    let error = res.expect_err("an end version before the start version must fail");
+    let Error::Delta(error) = error else {
+        panic!("expected structured Delta error, got {error:?}");
+    };
+
+    assert_eq!(
+        error.condition(),
+        delta_kernel::DeltaErrorCondition::DeltaInvalidCdcRange
+    );
+    assert_eq!(error.sql_state(), Some("22003"));
+    let parameters = error
+        .parameters()
+        .iter()
+        .map(|parameter| (parameter.name(), parameter.value()))
+        .collect::<Vec<_>>();
+    assert_eq!(parameters, vec![("start", "1"), ("end", "0")]);
+    assert_eq!(
+        error.to_string(),
+        "CDC range from start 1 to end 0 was invalid. End cannot be before start."
+    );
 }
 
 #[test]

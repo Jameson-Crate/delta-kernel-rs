@@ -12,7 +12,7 @@ use crate::metrics::{LogSegmentLoadType, MetricId, SnapshotLoadMetricContext};
 use crate::path::LogPathFileType;
 use crate::snapshot::SnapshotRef;
 use crate::utils::{require, try_parse_uri};
-use crate::{DeltaResult, Engine, Error, Snapshot, Version};
+use crate::{DeltaError, DeltaResult, Engine, Error, Snapshot, Version};
 
 /// Builder for creating [`Snapshot`] instances.
 ///
@@ -374,13 +374,29 @@ impl SnapshotBuilder {
     ) -> DeltaResult<()> {
         // Log tail must be sorted ascending and contiguous (no gaps or duplicates)
         for pair in log_tail.windows(2) {
-            require!(
-                pair[0].version + 1 == pair[1].version,
-                Error::LogTailVersionsNotContiguous {
-                    first_version: pair[0].version,
-                    second_version: pair[1].version,
-                }
-            );
+            if pair[0].version + 1 != pair[1].version {
+                let version_list = log_tail
+                    .iter()
+                    .map(|path| path.version.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let start_version = log_tail
+                    .first()
+                    .map(|path| path.version)
+                    .unwrap_or(pair[0].version);
+                let end_version = log_tail
+                    .last()
+                    .map(|path| path.version)
+                    .unwrap_or(pair[1].version);
+                let version_to_load = version.or(max_catalog_version).unwrap_or(end_version);
+                return Err(DeltaError::versions_not_contiguous(
+                    version_list,
+                    start_version,
+                    end_version,
+                    version_to_load,
+                )
+                .into());
+            }
         }
 
         // TODO: If inline commits (or any other catalog commits) are ever supported, change this
@@ -1082,14 +1098,16 @@ mod tests {
         }
 
         #[rstest::rstest]
-        #[case::gap(vec![1, 3], vec![1, 3], 3)]
-        #[case::duplicates(vec![1], vec![1, 1], 1)]
-        #[case::unsorted(vec![1, 2], vec![2, 1], 2)]
+        #[case::gap(vec![1, 3], vec![1, 3], 3, None)]
+        #[case::gap_with_explicit_version(vec![1, 3], vec![1, 3], 3, Some(2))]
+        #[case::duplicates(vec![1], vec![1, 1], 1, None)]
+        #[case::unsorted(vec![1, 2], vec![2, 1], 2, None)]
         #[test_log::test(tokio::test)]
         async fn test_non_contiguous_log_tail_errors(
             #[case] commit_versions: Vec<u64>,
             #[case] log_tail_versions: Vec<u64>,
             #[case] mcv: u64,
+            #[case] version: Option<u64>,
         ) -> Result<(), Box<dyn std::error::Error>> {
             let (engine, store, table_root) = setup_catalog_managed_test().await;
             for v in &commit_versions {
@@ -1104,15 +1122,40 @@ mod tests {
                 })
                 .collect();
 
-            let result = SnapshotBuilder::new_for(table_root)
+            let mut builder = SnapshotBuilder::new_for(table_root)
                 .with_log_tail(log_tail)
-                .with_max_catalog_version(mcv)
-                .build(engine.as_ref());
+                .with_max_catalog_version(mcv);
+            if let Some(version) = version {
+                builder = builder.at_version(version);
+            }
+            let result = builder.build(engine.as_ref());
 
-            assert!(matches!(
-                result,
-                Err(Error::LogTailVersionsNotContiguous { .. })
-            ));
+            let error = result.expect_err("non-contiguous log tail must fail");
+            let Error::Delta(error) = error else {
+                panic!("expected structured Delta error, got {error:?}");
+            };
+            assert_eq!(
+                error.condition(),
+                crate::DeltaErrorCondition::DeltaVersionsNotContiguous
+            );
+            let parameter_values = error
+                .parameters()
+                .iter()
+                .map(|parameter| parameter.value().to_string())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                parameter_values,
+                vec![
+                    log_tail_versions
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    log_tail_versions.first().unwrap().to_string(),
+                    log_tail_versions.last().unwrap().to_string(),
+                    version.unwrap_or(mcv).to_string(),
+                ]
+            );
 
             Ok(())
         }

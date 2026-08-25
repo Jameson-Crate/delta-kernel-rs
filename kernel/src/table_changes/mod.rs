@@ -55,7 +55,7 @@ use crate::table_properties::{
     MATERIALIZED_ROW_COMMIT_VERSION_COLUMN_NAME, MATERIALIZED_ROW_ID_COLUMN_NAME,
 };
 use crate::utils::require;
-use crate::{DeltaResult, Engine, Error, Version};
+use crate::{DeltaError, DeltaResult, Engine, Error, Version};
 
 mod log_replay;
 mod net_changes;
@@ -310,6 +310,12 @@ impl TableChanges {
         end_version: Option<Version>,
         mode: CdfMode,
     ) -> DeltaResult<Self> {
+        if let Some(end_version) = end_version {
+            if start_version > end_version {
+                return Err(DeltaError::invalid_cdc_range(start_version, end_version).into());
+            }
+        }
+
         let log_root = table_root.join("_delta_log/")?;
         let log_segment = LogSegment::for_table_changes(
             engine.storage_handler().as_ref(),
