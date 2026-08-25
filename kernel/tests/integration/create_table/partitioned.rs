@@ -2,16 +2,62 @@
 //!
 //! TODO(#2201): Add end-to-end tests for insert + scan + checkpoint on partitioned tables.
 
+use std::error::Error as _;
+
 use delta_kernel::committer::FileSystemCommitter;
+use delta_kernel::schema::schema_ref;
 use delta_kernel::snapshot::Snapshot;
 use delta_kernel::table_features::TableFeature;
 use delta_kernel::transaction::create_table::create_table;
 use delta_kernel::transaction::data_layout::DataLayout;
-use delta_kernel::DeltaResult;
+use delta_kernel::{DeltaErrorCondition, DeltaResult};
 use rstest::rstest;
 use test_utils::test_table_setup;
 
 use super::{partition_test_schema, simple_schema};
+
+#[rstest]
+#[case::migrated(
+    DataLayout::partitioned(["payload"]),
+    DeltaErrorCondition::DeltaInvalidPartitionColumnType
+)]
+#[case::legacy(
+    DataLayout::Partitioned { columns: Vec::new() },
+    DeltaErrorCondition::DeltaKernelUnclassified
+)]
+fn test_create_table_build_v3_error_boundary(
+    #[case] layout: DataLayout,
+    #[case] expected_condition: DeltaErrorCondition,
+) {
+    let schema = schema_ref! {
+        nullable "id": INTEGER,
+        nullable "payload": { nullable "value": STRING },
+    };
+    let (_temp_dir, table_path, engine) = test_table_setup().unwrap();
+
+    let error = create_table(&table_path, schema, "Test/1.0")
+        .with_data_layout(layout)
+        .build_v3(engine.as_ref(), Box::new(FileSystemCommitter::new()))
+        .expect_err("invalid partition layout must fail");
+
+    assert_eq!(error.condition(), expected_condition);
+    match expected_condition {
+        DeltaErrorCondition::DeltaInvalidPartitionColumnType => {
+            assert_eq!(error.parameters()[0].value(), "payload");
+            assert!(error.source().is_some());
+        }
+        DeltaErrorCondition::DeltaKernelUnclassified => {
+            assert_eq!(
+                error.to_string(),
+                "An unclassified Delta Kernel error occurred."
+            );
+            assert!(error
+                .source()
+                .is_some_and(|source| source.to_string().contains("at least one column")));
+        }
+        _ => unreachable!("test only covers classified and unclassified v3 errors"),
+    }
+}
 
 #[rstest]
 #[case::exact_casing("date")]

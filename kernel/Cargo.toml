@@ -145,6 +145,7 @@ default-engine-base = [
 
 [build-dependencies]
 rustc_version = "0.4.1"
+serde_json = "1"
 # Proto codegen, only pulled in / run under the `declarative-plans` feature.
 prost-build = { version = "0.13", optional = true }
 # Prebuilt `protoc` for that codegen, only pulled in under the `vendored-protoc` feature.

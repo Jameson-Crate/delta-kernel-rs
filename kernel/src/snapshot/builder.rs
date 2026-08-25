@@ -12,7 +12,7 @@ use crate::metrics::{LogSegmentLoadType, MetricId, SnapshotLoadMetricContext};
 use crate::path::LogPathFileType;
 use crate::snapshot::SnapshotRef;
 use crate::utils::{require, try_parse_uri};
-use crate::{DeltaResult, Engine, Error, Snapshot, Version};
+use crate::{DeltaResult, Engine, Error, KernelError, Snapshot, Version};
 
 /// Builder for creating [`Snapshot`] instances.
 ///
@@ -237,7 +237,7 @@ impl SnapshotBuilder {
     // Terminal: build the Snapshot
     // ============================================================================
 
-    /// Create a new [`Snapshot`]. This returns a [`SnapshotRef`] (`Arc<Snapshot>`), perhaps
+    /// Creates a new [`Snapshot`]. This returns a [`SnapshotRef`] (`Arc<Snapshot>`), perhaps
     /// returning a reference to an existing snapshot if the request to build a new snapshot
     /// matches the version of an existing snapshot.
     ///
@@ -246,10 +246,40 @@ impl SnapshotBuilder {
     ///
     /// # Parameters
     ///
-    /// - `engine`: Implementation of [`Engine`] apis.
+    /// - `engine`: Implementation of [`Engine`] APIs.
+    ///
+    /// # Returns
+    ///
+    /// The loaded snapshot when construction succeeds.
+    ///
+    /// # Errors
+    ///
+    /// Returns the legacy kernel error for any snapshot construction failure.
     ///
     /// [`MetricEvent::SnapshotBuildSuccess`]: crate::metrics::MetricEvent::SnapshotBuildSuccess
     /// [`MetricEvent::SnapshotBuildFailure`]: crate::metrics::MetricEvent::SnapshotBuildFailure
+    pub fn build(self, engine: &dyn Engine) -> DeltaResult<SnapshotRef> {
+        self.build_kernel(engine).map_err(Error::from)
+    }
+
+    /// Creates a snapshot through the option 3 split-result boundary.
+    ///
+    /// # Parameters
+    ///
+    /// - `engine`: Engine used to load the snapshot.
+    ///
+    /// # Returns
+    ///
+    /// The loaded snapshot when construction succeeds.
+    ///
+    /// # Errors
+    ///
+    /// Returns a specific [`crate::DeltaError`] for classified kernel conditions. Other failures
+    /// use `DELTA_KERNEL_UNCLASSIFIED` and retain the kernel error as their source.
+    pub fn build_v3(self, engine: &dyn Engine) -> crate::error::v3::DeltaResult<SnapshotRef> {
+        crate::error::v3::into_delta_result(self.build_kernel(engine))
+    }
+
     // `is_catalog_managed` is the requested load mode, not the confirmed protocol
     // (see `IS_CATALOG_MANAGED_FIELD`).
     #[instrument(
@@ -258,7 +288,7 @@ impl SnapshotBuilder {
         fields(path = %self.table_path(), report, version = tracing::field::Empty, operation_id = %self.operation_id, is_catalog_managed = self.max_catalog_version.is_some(), correlation_id = self.correlation_id.as_deref().unwrap_or(""), load_type = self.load_type().as_ref()),
         err
     )]
-    pub fn build(self, engine: &dyn Engine) -> DeltaResult<SnapshotRef> {
+    fn build_kernel(self, engine: &dyn Engine) -> crate::error::v3::KernelResult<SnapshotRef> {
         // Fold the context into the message string rather than passing structured fields: this
         // `info!` fires inside the `snap.build` metrics span, where any field the
         // `SnapshotBuildSuccess` event doesn't recognize would trip a spurious "Invalid field"
@@ -295,6 +325,8 @@ impl SnapshotBuilder {
         };
 
         let log_tail: Vec<_> = log_tail.into_iter().map(Into::into).collect();
+
+        Self::validate_log_tail_kernel(version, max_catalog_version, &log_tail)?;
 
         // Pre-build validations for catalog-managed tables
         Self::validate_catalog_managed_build_inputs(version, max_catalog_version, &log_tail)?;
@@ -357,7 +389,7 @@ impl SnapshotBuilder {
         if let Ok(ref snapshot) = result {
             tracing::Span::current().record("version", snapshot.version());
         }
-        result
+        result.map_err(KernelError::from)
     }
 
     // ============================================================================
@@ -365,6 +397,40 @@ impl SnapshotBuilder {
     // ============================================================================
 
     // ===== Catalog-managed Validations =====
+
+    fn validate_log_tail_kernel(
+        version: Option<Version>,
+        max_catalog_version: Option<Version>,
+        log_tail: &[crate::path::ParsedLogPath],
+    ) -> crate::error::v3::KernelResult<()> {
+        for pair in log_tail.windows(2) {
+            if pair[0].version + 1 != pair[1].version {
+                let version_list = log_tail
+                    .iter()
+                    .map(|path| path.version.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let start_version = log_tail
+                    .first()
+                    .map(|path| path.version)
+                    .unwrap_or(pair[0].version);
+                let end_version = log_tail
+                    .last()
+                    .map(|path| path.version)
+                    .unwrap_or(pair[1].version);
+                let version_to_load = version.or(max_catalog_version).unwrap_or(end_version);
+                return Err(KernelError::versions_not_contiguous(
+                    version_list,
+                    start_version,
+                    end_version,
+                    version_to_load,
+                    pair[0].version,
+                    pair[1].version,
+                ));
+            }
+        }
+        Ok(())
+    }
 
     /// Pre-build validations for catalog-managed table invariants.
     fn validate_catalog_managed_build_inputs(
@@ -1082,14 +1148,16 @@ mod tests {
         }
 
         #[rstest::rstest]
-        #[case::gap(vec![1, 3], vec![1, 3], 3)]
-        #[case::duplicates(vec![1], vec![1, 1], 1)]
-        #[case::unsorted(vec![1, 2], vec![2, 1], 2)]
+        #[case::gap(vec![1, 3], vec![1, 3], 3, None)]
+        #[case::gap_with_explicit_version(vec![1, 3], vec![1, 3], 3, Some(2))]
+        #[case::duplicates(vec![1], vec![1, 1], 1, None)]
+        #[case::unsorted(vec![1, 2], vec![2, 1], 2, None)]
         #[test_log::test(tokio::test)]
         async fn test_non_contiguous_log_tail_errors(
             #[case] commit_versions: Vec<u64>,
             #[case] log_tail_versions: Vec<u64>,
             #[case] mcv: u64,
+            #[case] version: Option<u64>,
         ) -> Result<(), Box<dyn std::error::Error>> {
             let (engine, store, table_root) = setup_catalog_managed_test().await;
             for v in &commit_versions {
@@ -1104,15 +1172,37 @@ mod tests {
                 })
                 .collect();
 
-            let result = SnapshotBuilder::new_for(table_root)
+            let mut builder = SnapshotBuilder::new_for(table_root)
                 .with_log_tail(log_tail)
-                .with_max_catalog_version(mcv)
-                .build(engine.as_ref());
+                .with_max_catalog_version(mcv);
+            if let Some(version) = version {
+                builder = builder.at_version(version);
+            }
+            let result = builder.build_v3(engine.as_ref());
 
-            assert!(matches!(
-                result,
-                Err(Error::LogTailVersionsNotContiguous { .. })
-            ));
+            let error = result.expect_err("non-contiguous log tail must fail");
+            assert_eq!(
+                error.condition(),
+                crate::DeltaErrorCondition::DeltaVersionsNotContiguous
+            );
+            let parameter_values = error
+                .parameters()
+                .iter()
+                .map(|parameter| parameter.value().to_string())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                parameter_values,
+                vec![
+                    log_tail_versions
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    log_tail_versions.first().unwrap().to_string(),
+                    log_tail_versions.last().unwrap().to_string(),
+                    version.unwrap_or(mcv).to_string(),
+                ]
+            );
 
             Ok(())
         }

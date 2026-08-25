@@ -55,7 +55,7 @@ use crate::table_properties::{
     MATERIALIZED_ROW_COMMIT_VERSION_COLUMN_NAME, MATERIALIZED_ROW_ID_COLUMN_NAME,
 };
 use crate::utils::require;
-use crate::{DeltaResult, Engine, Error, Version};
+use crate::{DeltaResult, Engine, Error, KernelError, Version};
 
 mod log_replay;
 mod net_changes;
@@ -253,6 +253,51 @@ impl TableChanges {
         start_version: Version,
         end_version: Option<Version>,
     ) -> DeltaResult<Self> {
+        Self::try_new_kernel(table_root, engine, start_version, end_version).map_err(Error::from)
+    }
+
+    /// Creates a change data feed through the option 3 split-result boundary.
+    ///
+    /// # Parameters
+    ///
+    /// - `table_root`: URL of the table root containing `_delta_log`.
+    /// - `engine`: Engine used to load and validate the change feed.
+    /// - `start_version`: First version in the change feed.
+    /// - `end_version`: Optional inclusive final version; the latest version is used when absent.
+    ///
+    /// # Returns
+    ///
+    /// The validated change data feed.
+    ///
+    /// # Errors
+    ///
+    /// Returns a specific [`crate::DeltaError`] for classified kernel conditions. Other failures
+    /// use `DELTA_KERNEL_UNCLASSIFIED` and retain the kernel error as their source.
+    pub fn try_new_v3(
+        table_root: Url,
+        engine: &dyn Engine,
+        start_version: Version,
+        end_version: Option<Version>,
+    ) -> crate::error::v3::DeltaResult<Self> {
+        crate::error::v3::into_delta_result(Self::try_new_kernel(
+            table_root,
+            engine,
+            start_version,
+            end_version,
+        ))
+    }
+
+    fn try_new_kernel(
+        table_root: Url,
+        engine: &dyn Engine,
+        start_version: Version,
+        end_version: Option<Version>,
+    ) -> crate::error::v3::KernelResult<Self> {
+        if let Some(end_version) = end_version {
+            if start_version > end_version {
+                return Err(KernelError::invalid_cdc_range(start_version, end_version));
+            }
+        }
         Self::try_new_internal(
             table_root,
             engine,
@@ -260,6 +305,7 @@ impl TableChanges {
             end_version,
             CdfMode::ChangeDataFeed,
         )
+        .map_err(KernelError::from)
     }
 
     /// Creates a listing-only change feed from row-tracking metadata.
