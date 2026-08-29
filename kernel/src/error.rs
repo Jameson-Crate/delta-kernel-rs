@@ -13,6 +13,37 @@ use crate::schema::{DataType, StructType};
 use crate::table_properties::ParseIntervalError;
 use crate::Version;
 
+mod delta_error;
+
+pub use delta_error::{DeltaError, DeltaErrorCondition, DeltaErrorParameter, KernelError};
+
+/// Prototype API that gives Delta-facing and kernel-internal failures distinct result types.
+///
+/// This facade is additive: the existing [`super::DeltaResult`] remains unchanged because it is
+/// also the result type of engine callbacks and internal control-flow checks. The prototype omits
+/// the separate engine result type and applies the option 3 split at representative boundaries.
+pub mod v3 {
+    use super::{DeltaError, KernelError};
+
+    /// A result whose error is always a structured [`DeltaError`].
+    pub type DeltaResult<T> = std::result::Result<T, DeltaError>;
+
+    /// A result whose error describes a failure inside the kernel.
+    pub type KernelResult<T> = std::result::Result<T, KernelError>;
+
+    /// Converts a kernel result into the structured Delta-facing result type.
+    ///
+    /// Classified kernel errors become their corresponding catalog condition. Unclassified errors
+    /// become the generic kernel-owned fallback and remain available through the source chain.
+    ///
+    /// # Errors
+    ///
+    /// Returns the Delta-facing form of any kernel error in `result`.
+    pub fn into_delta_result<T>(result: KernelResult<T>) -> DeltaResult<T> {
+        result.map_err(DeltaError::from)
+    }
+}
+
 /// Details of a failed conversion from a scalar into a Rust value.
 ///
 /// Conversion code adds path elements as an error unwinds, producing a path from the outermost
@@ -78,7 +109,7 @@ pub(crate) fn add_scalar_path_context(error: Error, element: impl Into<String>) 
     }
 }
 
-/// A [`std::result::Result`] that has the kernel [`Error`] as the error variant
+/// A [`std::result::Result`] that has the kernel [`Error`] as the error variant.
 pub type DeltaResult<T, E = Error> = std::result::Result<T, E>;
 
 /// A boxed, `Send` iterator of [`DeltaResult<T>`] items.
