@@ -46,7 +46,7 @@ use crate::transaction::create_table::CreateTableTransaction;
 use crate::transaction::data_layout::DataLayout;
 use crate::transaction::Transaction;
 use crate::utils::{current_time_ms, try_parse_uri};
-use crate::{DeltaResult, Engine, Error, StorageHandler};
+use crate::{DeltaError, DeltaResult, Engine, Error, StorageHandler};
 
 /// Table features allowed to be enabled via `delta.feature.*=supported` during CREATE TABLE.
 ///
@@ -289,11 +289,7 @@ fn validate_partition_columns(
         })?;
 
         let DataType::Primitive(_) = field.data_type() else {
-            return Err(Error::generic(format!(
-                "Partition column '{col}' has non-primitive type '{}'. \
-                 Partition columns must have primitive types.",
-                field.data_type()
-            )));
+            return Err(DeltaError::invalid_partition_column_type(col, field.data_type()).into());
         };
     }
     Ok(())
@@ -987,6 +983,29 @@ impl CreateTableTransactionBuilder {
             data_layout_result.clustering_columns,
             self.correlation_id,
         )
+    }
+
+    /// Builds a create-table transaction through the option 2 structured-error boundary.
+    ///
+    /// # Parameters
+    ///
+    /// - `engine`: Engine used to validate the table.
+    /// - `committer`: Committer stored on the resulting transaction.
+    ///
+    /// # Returns
+    ///
+    /// A validated transaction ready to commit the new table.
+    ///
+    /// # Errors
+    ///
+    /// Migrated conditions return a specific [`DeltaError`]. Other failures use
+    /// `DELTA_KERNEL_UNCLASSIFIED` and retain the legacy error as their source.
+    pub fn build_v2(
+        self,
+        engine: &dyn Engine,
+        committer: Box<dyn Committer>,
+    ) -> crate::error::v2::DeltaResult<CreateTableTransaction> {
+        crate::error::v2::into_delta_result(self.build(engine, committer))
     }
 }
 
@@ -1708,17 +1727,25 @@ mod tests {
         #[case] col_name: &str,
         #[case] data_type: DataType,
     ) {
+        let data_type_display = data_type.to_string();
         let schema = schema! {
             not_null "id": INTEGER,
             not_null col_name: (data_type),
         };
         let columns = vec![ColumnName::new([col_name])];
-        let result = validate_partition_columns(&schema, &columns);
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("non-primitive type"));
+        let result =
+            crate::error::v2::into_delta_result(validate_partition_columns(&schema, &columns));
+        let error = result.expect_err("complex partition columns must be rejected");
+        assert_eq!(
+            error.condition(),
+            crate::DeltaErrorCondition::DeltaInvalidPartitionColumnType
+        );
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "Using column {col_name} of type {data_type_display} as a partition column is not supported."
+            )
+        );
     }
 
     #[rstest::rstest]

@@ -55,7 +55,7 @@ use crate::table_properties::{
     MATERIALIZED_ROW_COMMIT_VERSION_COLUMN_NAME, MATERIALIZED_ROW_ID_COLUMN_NAME,
 };
 use crate::utils::require;
-use crate::{DeltaResult, Engine, Error, Version};
+use crate::{DeltaError, DeltaResult, Engine, Error, Version};
 
 mod log_replay;
 mod net_changes;
@@ -262,6 +262,37 @@ impl TableChanges {
         )
     }
 
+    /// Creates a change data feed through the option 2 structured-error boundary.
+    ///
+    /// # Parameters
+    ///
+    /// - `table_root`: URL of the table root containing `_delta_log`.
+    /// - `engine`: Engine used to load and validate the change feed.
+    /// - `start_version`: First version in the change feed.
+    /// - `end_version`: Optional inclusive final version; the latest version is used when absent.
+    ///
+    /// # Returns
+    ///
+    /// The validated change data feed.
+    ///
+    /// # Errors
+    ///
+    /// Returns a specific [`DeltaError`] for migrated conditions. Other
+    /// failures use `DELTA_KERNEL_UNCLASSIFIED` and retain the legacy error as their source.
+    pub fn try_new_v2(
+        table_root: Url,
+        engine: &dyn Engine,
+        start_version: Version,
+        end_version: Option<Version>,
+    ) -> crate::error::v2::DeltaResult<Self> {
+        crate::error::v2::into_delta_result(Self::try_new(
+            table_root,
+            engine,
+            start_version,
+            end_version,
+        ))
+    }
+
     /// Creates a listing-only change feed from row-tracking metadata.
     ///
     /// This path requires `delta.enableRowTracking` and ignores `_change_data` files.
@@ -310,6 +341,12 @@ impl TableChanges {
         end_version: Option<Version>,
         mode: CdfMode,
     ) -> DeltaResult<Self> {
+        if let Some(end_version) = end_version {
+            if start_version > end_version {
+                return Err(DeltaError::invalid_cdc_range(start_version, end_version).into());
+            }
+        }
+
         let log_root = table_root.join("_delta_log/")?;
         let log_segment = LogSegment::for_table_changes(
             engine.storage_handler().as_ref(),
