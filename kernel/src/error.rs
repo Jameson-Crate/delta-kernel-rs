@@ -13,6 +13,10 @@ use crate::schema::{DataType, StructType};
 use crate::table_properties::ParseIntervalError;
 use crate::Version;
 
+mod delta_error;
+
+pub use delta_error::{DeltaError, DeltaErrorCondition, DeltaErrorParameter};
+
 /// Details of a failed conversion from a scalar into a Rust value.
 ///
 /// Conversion code adds path elements as an error unwinds, producing a path from the outermost
@@ -104,6 +108,10 @@ pub enum Error {
         source: Box<Self>,
         backtrace: Box<Backtrace>,
     },
+
+    /// A structured, user-facing Delta error.
+    #[error(transparent)]
+    Delta(#[from] DeltaError),
 
     /// An error performing operations on arrow data
     #[cfg(feature = "default-engine-base")]
