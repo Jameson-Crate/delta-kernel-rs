@@ -23,6 +23,7 @@ crate-type = ["lib", "cdylib", "staticlib"]
 redundant_field_names = "allow"
 
 [dependencies]
+delta_kernel_alloc_tracking = { path = "../alloc-tracking", optional = true }
 bytes = "1.10"
 derive_more = { version = "~2.1", default-features = false, features = ["constructor", "from"] }
 prost = { version = "0.13", optional = true }
@@ -92,4 +93,4 @@ adaptive-metadata-in-dev = ["delta_kernel/adaptive-metadata-in-dev"]
 # `*_native_bytes` FFI getters. Off by default. Only enable when building the cdylib:
 # this crate is also an rlib, so `#[global_allocator]` applies to any Rust binary that
 # links it and conflicts with a binary that installs its own (jemalloc, dhat, ...).
-alloc-tracking = []
+alloc-tracking = ["dep:delta_kernel_alloc_tracking"]

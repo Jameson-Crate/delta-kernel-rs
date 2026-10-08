@@ -288,6 +288,9 @@ jobs:
           output=$(cargo run --profile test --example metrics-tester)
           grep -q 'invalid_field' <<< "$output"
           grep -q 'Invalid uuid' <<< "$output"
+      - name: benchmark memory reporting smoke tests
+        if: matrix.os == 'ubuntu-latest' && matrix.config == 'all-features'
+        run: python3 benchmarks/ci/test_memory_reporting.py
       - name: no-declarative-plans tests
         if: matrix.config == 'no-declarative-plans'
         shell: bash

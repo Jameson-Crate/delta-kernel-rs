@@ -1571,12 +1571,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "delta_kernel_alloc_tracking"
+version = "0.29.0"
+
+[[package]]
 name = "delta_kernel_benchmarks"
 version = "0.29.0"
 dependencies = [
  "criterion",
  "delta-kernel-unity-catalog",
  "delta_kernel",
+ "delta_kernel_alloc_tracking",
  "delta_kernel_default_engine",
  "delta_kernel_workloads",
  "flate2",
@@ -1648,6 +1653,7 @@ dependencies = [
  "cbindgen",
  "delta-kernel-unity-catalog",
  "delta_kernel",
+ "delta_kernel_alloc_tracking",
  "delta_kernel_default_engine",
  "delta_kernel_ffi_macros",
  "derive_more",

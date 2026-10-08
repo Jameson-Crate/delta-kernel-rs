@@ -791,7 +791,8 @@ The setter consumes the builder on both success and error, returning its replace
 - `src/ffi_tracing.rs` -- log, metrics, and frame callback registration
   (`#[cfg(feature = "tracing")]`)
 - `src/ffi_metrics.rs` -- `repr(C)` mirror of kernel `MetricEvent` types (`#[cfg(feature = "tracing")]`)
-- `src/alloc_stats.rs` -- tracked global allocator and native-heap FFI getters
+- `src/alloc_stats.rs` -- installs the shared `delta_kernel_alloc_tracking` allocator and exposes
+  native-heap FFI getters
   (`alloc-tracking`)
 
 ## Read Flow
