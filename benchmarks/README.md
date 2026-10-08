@@ -19,6 +19,49 @@ cargo install samply
 samply record cargo bench -p delta_kernel_benchmarks --bench workload_bench "some_name"
 ```
 
+### Peak heap usage
+
+Enable the non-default `alloc-tracking` Cargo feature to report memory usage alongside Criterion:
+
+```bash
+cargo bench -p delta_kernel_benchmarks --bench workload_bench \
+  --features alloc-tracking -- 'snapshotLatest'
+```
+
+The harness measures one warmed execution in the existing post-timing I/O profiling pass. Its
+primary result, `peak_increase_bytes`, is the peak live requested Rust allocation bytes minus the
+live bytes immediately before execution, clamped to zero. Read-metadata benchmarks exclude their
+prebuilt snapshot, engine, and worker-pool setup; snapshot-construction benchmarks include snapshot
+construction. Temporary allocations count even when freed before the operation returns.
+
+Each selected benchmark prints its result and writes a record to `memory.jsonl`:
+
+```json
+{"benchmark":"table/readMetadataLatest/serial","unit":"bytes","baseline_bytes":1024,"peak_live_bytes":1536,"peak_increase_bytes":512}
+```
+
+Tracking-enabled runs use `CRITERION_HOME` when set, or `target/criterion-alloc-tracking` relative to
+the working directory. The JSONL artifact lives at that root, separate from Criterion's timing
+files. Each invocation truncates the artifact and flushes each completed record; filtered benchmarks
+and list mode emit no memory records. Execution or report-writing errors fail the command.
+
+The allocator is active throughout tracking-enabled runs, including Criterion timing. Keep these
+instrumented timings separate from ordinary timing baselines, including when overriding
+`CRITERION_HOME`. Without the feature, allocator selection and Criterion output paths are unchanged.
+
+These are advisory process-wide requested Rust heap bytes, including engine workers and background
+activity. They exclude C allocations, memory mappings, allocator overhead, and RSS. Counter resets
+are not synchronized with allocations: background Tokio cleanup can overlap a window and lose
+extrema. The result is net live-heap growth during one warmed execution, not exclusive attribution
+to kernel code, total allocated bytes, or the maximum across all Criterion iterations. It is not a
+Criterion statistical estimate.
+
+Run the harness smoke tests with tracking enabled and disabled:
+
+```bash
+python3 benchmarks/ci/test_memory_reporting.py
+```
+
 ### Filtering benchmarks
 
 #### By benchmark name
@@ -364,5 +407,6 @@ that maps read benchmarks to them are benchmark-specific and live in this crate.
 | `bench-registry.json` | Checked-in registry mapping read benchmarks to their harness configs |
 | `src/runners.rs` | `WorkloadRunner` trait and implementations: `ReadMetadataRunner`, `SnapshotConstructionRunner` |
 | `src/utils.rs` | Workload loading: deserializes workloads from the extracted data directory |
+| `src/memory.rs` | Opt-in per-operation live-heap measurements and JSONL reporting |
 | `benches/workload_bench.rs` | Criterion entry point — loads workloads + registry, builds runners, drives benchmarks |
 | `build.rs` | Downloads and extracts benchmark workloads from the DAT GitHub release at build time |

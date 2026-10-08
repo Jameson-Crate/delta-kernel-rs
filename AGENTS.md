@@ -68,6 +68,7 @@ cargo +nightly fmt \
 | `test_utils`                         | `test-utils/`                         | Shared test utilities                                                    |
 | `delta_kernel_workloads`             | `workloads/`                          | Shared workload spec types + SQL predicate parser                        |
 | `delta_kernel_benchmarks`            | `benchmarks/`                         | Workload benchmarks                                                      |
+| `delta_kernel_alloc_tracking`        | `alloc-tracking/`                     | Shared requested Rust heap allocation counters                           |
 | `feature_tests`                      | `feature-tests/`                      | Feature flag tests                                                       |
 | `mem-test`                           | `mem-test/`                           | Memory-usage test executable                                             |
 | `delta-kernel-unity-catalog`         | `delta-kernel-unity-catalog/`         | Unity Catalog integration (UCCommitter, snapshot + create-table helpers) |
