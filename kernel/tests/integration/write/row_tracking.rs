@@ -80,7 +80,7 @@ mod row_tracking_preservation {
     #[tokio::test]
     async fn insert_commit_info_preservation_tag_requires_row_tracking_enabled(
         #[case] test_case: CommitInfoTagTestCase,
-    ) -> KernelResult<()> {
+    ) -> KernelResult<(), Box<dyn std::error::Error>> {
         // === Create a table in the requested Row Tracking state ===
         let (_temp_dir, table_path, engine) = test_table_setup()?;
         let table_url = Url::from_directory_path(&table_path).unwrap();
@@ -349,7 +349,7 @@ mod row_tracking_preservation {
     #[tokio::test(flavor = "multi_thread")]
     async fn remove_files_requires_row_tracking_preservation_acknowledgment(
         #[case] test_case: RemoveTestCase,
-    ) -> KernelResult<()> {
+    ) -> KernelResult<(), Box<dyn std::error::Error>> {
         // === Create the table and insert data ===
         let (_temp_dir, table_path, engine) = test_table_setup_mt()?;
         let schema = schema_ref! { nullable "number": INTEGER };
@@ -411,7 +411,8 @@ mod row_tracking_preservation {
     }
 
     #[tokio::test]
-    async fn deletion_vector_update_requires_preservation_acknowledgment() -> KernelResult<()> {
+    async fn deletion_vector_update_requires_preservation_acknowledgment(
+    ) -> KernelResult<(), Box<dyn std::error::Error>> {
         // === Create a Row Tracking table with deletion vectors and insert data ===
         let tmp_dir = tempfile::tempdir()?;
         let (_schema, table_url, engine, store) = setup_number_table_with_features(
@@ -471,7 +472,7 @@ mod row_tracking_preservation {
     #[tokio::test(flavor = "multi_thread")]
     async fn optimize_preserves_row_tracking_metadata_in_data_and_checkpoint(
         #[case] table_properties: &[(&str, &str)],
-    ) -> KernelResult<()> {
+    ) -> KernelResult<(), Box<dyn std::error::Error>> {
         // === Write two source files ===
         let (_temp_dir, table_path, engine) = test_table_setup_mt()?;
         let schema = schema_ref! { nullable "number": INTEGER };

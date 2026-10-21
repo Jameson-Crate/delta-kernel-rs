@@ -72,7 +72,7 @@ async fn test_create_table_with_row_tracking(
     )]
     activation: (&str, &str),
     #[values(false, true)] with_data: bool,
-) -> KernelResult<()> {
+) -> KernelResult<(), Box<dyn std::error::Error>> {
     let (key, value) = activation;
     let expect_property_enabled = key == "delta.enableRowTracking";
 
@@ -191,7 +191,8 @@ async fn test_create_table_with_row_tracking(
 /// Verifies that CTAS with multiple files assigns non-overlapping baseRowId ranges and
 /// computes the correct cumulative high water mark.
 #[tokio::test]
-async fn test_create_table_with_multiple_files_and_row_tracking() -> KernelResult<()> {
+async fn test_create_table_with_multiple_files_and_row_tracking(
+) -> KernelResult<(), Box<dyn std::error::Error>> {
     let (_temp_dir, table_path, engine) = test_table_setup()?;
 
     let schema = super::simple_schema()?;
@@ -315,7 +316,8 @@ fn test_create_table_with_row_tracking_and_clustering() -> KernelResult<()> {
 /// Both features generate domain metadata and the add files need row tracking columns.
 /// Verifies that both domain metadata entries survive when add files are also written.
 #[tokio::test]
-async fn test_create_table_with_row_tracking_and_clustering_and_data() -> KernelResult<()> {
+async fn test_create_table_with_row_tracking_and_clustering_and_data(
+) -> KernelResult<(), Box<dyn std::error::Error>> {
     let (_temp_dir, table_path, engine) = test_table_setup()?;
 
     let schema = super::simple_schema()?;
@@ -401,7 +403,8 @@ async fn test_create_table_with_row_tracking_and_clustering_and_data() -> Kernel
 /// subsequent data append. The initial create writes `rowIdHighWaterMark = -1`; the append must
 /// read that and assign `baseRowId = 0` to the first file.
 #[tokio::test]
-async fn test_feature_signal_create_then_append_assigns_correct_base_row_id() -> KernelResult<()> {
+async fn test_feature_signal_create_then_append_assigns_correct_base_row_id(
+) -> KernelResult<(), Box<dyn std::error::Error>> {
     let (_temp_dir, table_path, engine) = test_table_setup()?;
 
     // Create empty table with feature signal only (no enablement property)

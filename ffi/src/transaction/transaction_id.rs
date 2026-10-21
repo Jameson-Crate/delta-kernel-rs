@@ -84,7 +84,7 @@ mod tests {
 
     #[cfg(feature = "default-engine-base")]
     #[tokio::test]
-    async fn test_write_txn_actions() -> KernelResult<()> {
+    async fn test_write_txn_actions() -> KernelResult<(), Box<dyn std::error::Error>> {
         // create a simple table: one int column named 'number'
         let schema = schema_ref! { nullable "number": INTEGER };
 

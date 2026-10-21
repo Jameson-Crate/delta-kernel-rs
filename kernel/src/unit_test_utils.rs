@@ -359,7 +359,7 @@ pub(crate) mod adaptive_metadata_fixtures {
     }
 
     /// Creates an empty in-memory table and returns its engine and table-root URL.
-    pub(crate) fn setup_table() -> KernelResult<(SyncEngine, Url)> {
+    pub(crate) fn setup_table() -> delta_kernel::Result<(SyncEngine, Url)> {
         let engine = SyncEngine::new_with_store(Arc::new(InMemory::new()));
         let schema = schema_ref! { nullable "id": INTEGER };
         let _ = create_table("memory:///", schema, "test", true)
@@ -1297,7 +1297,7 @@ pub(crate) fn copy_test_table(table_name: &str) -> KernelResult<(Url, TempDir)> 
 /// for the duration of the test to prevent premature cleanup of extracted files.
 pub(crate) fn load_test_table(
     table_name: &str,
-) -> KernelResult<(Arc<dyn Engine>, SnapshotRef, Option<TempDir>)> {
+) -> delta_kernel::Result<(Arc<dyn Engine>, SnapshotRef, Option<TempDir>)> {
     let (path, tempdir) = resolve_test_table_path(table_name)?;
 
     let url = Url::from_directory_path(&path)

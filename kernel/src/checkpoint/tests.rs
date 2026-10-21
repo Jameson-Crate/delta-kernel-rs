@@ -79,7 +79,7 @@ fn test_verify_written_size(
 }
 
 #[tokio::test]
-async fn test_create_checkpoint_metadata_batch() -> KernelResult<()> {
+async fn test_create_checkpoint_metadata_batch() -> KernelResult<(), Box<dyn std::error::Error>> {
     let (store, _) = new_in_memory_store();
     let engine = SyncEngine::new_with_store(store.clone());
 
@@ -345,7 +345,8 @@ async fn read_last_checkpoint_file(store: &Arc<InMemory>) -> KernelResult<Value>
 /// - A table that does not support v2Checkpoint
 /// - No version specified (latest version is used)
 #[tokio::test]
-async fn test_v1_checkpoint_latest_version_by_default() -> KernelResult<()> {
+async fn test_v1_checkpoint_latest_version_by_default(
+) -> KernelResult<(), Box<dyn std::error::Error>> {
     let (store, _) = new_in_memory_store();
     let engine = SyncEngine::new_with_store(store.clone());
 
@@ -423,7 +424,7 @@ async fn test_v1_checkpoint_latest_version_by_default() -> KernelResult<()> {
 /// - A table that does not support v2Checkpoint
 /// - A specific version specified (version 0)
 #[tokio::test]
-async fn test_v1_checkpoint_specific_version() -> KernelResult<()> {
+async fn test_v1_checkpoint_specific_version() -> KernelResult<(), Box<dyn std::error::Error>> {
     let (store, _) = new_in_memory_store();
     let engine = SyncEngine::new_with_store(store.clone());
 
@@ -488,7 +489,8 @@ async fn test_v1_checkpoint_specific_version() -> KernelResult<()> {
 }
 
 #[tokio::test]
-async fn test_finalize_errors_if_checkpoint_data_iterator_is_not_exhausted() -> KernelResult<()> {
+async fn test_finalize_errors_if_checkpoint_data_iterator_is_not_exhausted(
+) -> KernelResult<(), Box<dyn std::error::Error>> {
     let (store, _) = new_in_memory_store();
     let engine = SyncEngine::new_with_store(store.clone());
 
@@ -578,7 +580,7 @@ fn test_last_checkpoint_hint_stats_rejects_invalid_input(
 /// - A table that does supports v2Checkpoint
 /// - No version specified (latest version is used)
 #[tokio::test]
-async fn test_v2_checkpoint_supported_table() -> KernelResult<()> {
+async fn test_v2_checkpoint_supported_table() -> KernelResult<(), Box<dyn std::error::Error>> {
     let (store, _) = new_in_memory_store();
     let engine = SyncEngine::new_with_store(store.clone());
 
@@ -653,7 +655,8 @@ async fn test_v2_checkpoint_supported_table() -> KernelResult<()> {
 }
 
 #[tokio::test]
-async fn test_no_checkpoint_on_unpublished_snapshot() -> KernelResult<()> {
+async fn test_no_checkpoint_on_unpublished_snapshot() -> KernelResult<(), Box<dyn std::error::Error>>
+{
     let (store, _) = new_in_memory_store();
     let engine = SyncEngine::new_with_store(store.clone());
 
@@ -716,7 +719,7 @@ fn create_add_action_with_stats(path: &str, num_records: i64) -> Action {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_snapshot_checkpoint() -> KernelResult<()> {
+async fn test_snapshot_checkpoint() -> KernelResult<(), Box<dyn std::error::Error>> {
     let (store, _) = new_in_memory_store();
     let engine = SyncEngine::new_with_store(store.clone());
 
@@ -813,7 +816,8 @@ async fn test_snapshot_checkpoint() -> KernelResult<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_checkpoint_preserves_domain_metadata() -> KernelResult<()> {
+async fn test_checkpoint_preserves_domain_metadata() -> KernelResult<(), Box<dyn std::error::Error>>
+{
     // ===== Setup =====
     let tmp_dir = tempdir().unwrap();
     let table_path = tmp_dir.path();
@@ -852,7 +856,7 @@ async fn test_checkpoint_preserves_domain_metadata() -> KernelResult<()> {
     // ===== Create Engine =====
     let engine = SyncEngine::new();
 
-    let commit_domain_metadata = |domain: &str, value: &str| -> KernelResult<()> {
+    let commit_domain_metadata = |domain: &str, value: &str| -> crate::Result<()> {
         let snapshot = Snapshot::builder_for(table_url.clone()).build(&engine)?;
         let txn = snapshot
             .update_table(UpdateTableOperation::Write, "test-engine", true)
@@ -887,7 +891,8 @@ async fn test_checkpoint_preserves_domain_metadata() -> KernelResult<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_checkpoint_excludes_tombstoned_domain_metadata() -> KernelResult<()> {
+async fn test_checkpoint_excludes_tombstoned_domain_metadata(
+) -> KernelResult<(), Box<dyn std::error::Error>> {
     // ===== Setup =====
     let tmp_dir = tempdir().unwrap();
     let table_path = tmp_dir.path();
@@ -971,8 +976,8 @@ async fn test_checkpoint_excludes_tombstoned_domain_metadata() -> KernelResult<(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_checkpoint_skips_last_checkpoint_write_when_hint_version_is_newer() -> KernelResult<()>
-{
+async fn test_checkpoint_skips_last_checkpoint_write_when_hint_version_is_newer(
+) -> KernelResult<(), Box<dyn std::error::Error>> {
     let (store, _) = new_in_memory_store();
     let engine = SyncEngine::new_with_store(store.clone());
 
@@ -1024,7 +1029,7 @@ async fn test_checkpoint_skips_last_checkpoint_write_when_hint_version_is_newer(
         .at_version(1)
         .build(&engine)?;
     snapshot_v1.checkpoint(&engine, None)?;
-    assert_last_checkpoint_contents(&store, 2, 4, 2, size_in_bytes).await
+    Ok(assert_last_checkpoint_contents(&store, 2, 4, 2, size_in_bytes).await?)
 }
 
 /// Helper to create metadata action with specific stats settings
@@ -1134,7 +1139,7 @@ async fn test_stats_config_round_trip(
     #[values(true, false)] struct1: bool,
     #[values(true, false)] json2: bool,
     #[values(true, false)] struct2: bool,
-) -> KernelResult<()> {
+) -> KernelResult<(), Box<dyn std::error::Error>> {
     let (store, _) = new_in_memory_store();
     let engine = SyncEngine::new_with_store(store.clone());
     let table_root = Url::parse("memory:///")?;
@@ -1201,7 +1206,7 @@ async fn test_stats_config_round_trip_partitioned(
     #[values(true, false)] struct1: bool,
     #[values(true, false)] json2: bool,
     #[values(true, false)] struct2: bool,
-) -> KernelResult<()> {
+) -> KernelResult<(), Box<dyn std::error::Error>> {
     let (store, _) = new_in_memory_store();
     let engine = SyncEngine::new_with_store(store.clone());
     let table_root = Url::parse("memory:///")?;
@@ -1313,7 +1318,8 @@ async fn test_stats_config_round_trip_partitioned(
 // NullCountStatsTransform), but the stats_parsed data from the old checkpoint lacks it,
 // causing an Arrow schema mismatch in the COALESCE expression.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_checkpoint_with_varchar_metadata_on_field() -> KernelResult<()> {
+async fn test_checkpoint_with_varchar_metadata_on_field(
+) -> KernelResult<(), Box<dyn std::error::Error>> {
     let (store, _) = new_in_memory_store();
     let engine = SyncEngine::new_with_store(store.clone());
 

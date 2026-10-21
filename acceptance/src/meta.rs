@@ -13,6 +13,8 @@ use url::Url;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AssertionError {
+    #[error(transparent)]
+    Kernel(#[from] delta_kernel::Error),
     #[error("Invalid test case data")]
     InvalidTestCase,
 

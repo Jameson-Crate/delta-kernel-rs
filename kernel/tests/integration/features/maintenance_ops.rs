@@ -76,7 +76,9 @@ async fn test_checkpoint_and_checksum_return_updated_snapshots(
 #[case::v1_checkpoint(false)]
 #[case::v2_checkpoint(true)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_checkpoint_already_exists(#[case] v2_checkpoint: bool) -> KernelResult<()> {
+async fn test_checkpoint_already_exists(
+    #[case] v2_checkpoint: bool,
+) -> KernelResult<(), Box<dyn std::error::Error>> {
     let (_temp_dir, table_path, engine) = test_table_setup_mt()?;
     let schema = schema_ref! { nullable "id": INTEGER };
     let mut builder = create_table(&table_path, schema, "test_engine", true);
@@ -152,7 +154,7 @@ async fn checkpoint_crc_writes_reject_unsupported_table_features(
     #[case] reader_features: &[&str],
     #[case] writer_features: &[&str],
     #[case] checkpoint_spec: Option<CheckpointSpec>,
-) -> KernelResult<()> {
+) -> KernelResult<(), Box<dyn std::error::Error>> {
     let (_temp_dir, table_path, engine) = test_table_setup_mt()?;
     let table_url = Url::from_directory_path(&table_path).unwrap();
     let store = LocalFileSystem::new();

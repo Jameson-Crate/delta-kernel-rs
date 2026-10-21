@@ -70,7 +70,7 @@ async fn commit_append_emits_success_metrics(
     #[case] operation: &str,
     #[case] data_change: bool,
     #[case] is_blind_append: bool,
-) -> KernelResult<()> {
+) -> KernelResult<(), Box<dyn std::error::Error>> {
     let (_temp_dir, table_url) = setup_empty_table()?;
     let reporter = Arc::new(LastCommitSuccess::default());
     let engine = Arc::new(DefaultEngineBuilder::new(Arc::new(LocalFileSystem::new())).build());
@@ -108,7 +108,7 @@ async fn commit_append_emits_success_metrics(
 async fn empty_update_commit_preserves_explicit_data_change(
     #[values(false, true)] data_change: bool,
     #[values(false, true)] schema_change: bool,
-) -> KernelResult<()> {
+) -> KernelResult<(), Box<dyn std::error::Error>> {
     let (_temp_dir, table_url) = setup_empty_table()?;
     let reporter = Arc::new(LastCommitSuccess::default());
     let engine = Arc::new(DefaultEngineBuilder::new(Arc::new(LocalFileSystem::new())).build());
@@ -136,7 +136,8 @@ async fn empty_update_commit_preserves_explicit_data_change(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn commit_reports_added_file_count_not_batch_count() -> KernelResult<()> {
+async fn commit_reports_added_file_count_not_batch_count(
+) -> KernelResult<(), Box<dyn std::error::Error>> {
     // num_add_files counts added FILES, not add_files() batches: two batches of two files each
     // must report 4. A regression to add_files_metadata.len() (a batch count) would report 2.
     let (_temp_dir, table_url) = setup_empty_table()?;
@@ -237,7 +238,7 @@ async fn create_table_builder_carries_correlation_id(
 async fn alter_table_builder_carries_correlation_id(
     #[case] correlation_id: Option<&str>,
     #[case] expected: Option<&str>,
-) -> KernelResult<()> {
+) -> KernelResult<(), Box<dyn std::error::Error>> {
     let (_temp_dir, table_path, engine) = test_table_setup_mt()?;
     create_table(&table_path, simple_schema(), "Test/1.0", true)
         .build(engine.as_ref(), Box::new(FileSystemCommitter::new()))?
@@ -268,7 +269,7 @@ async fn alter_table_builder_carries_correlation_id(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn commit_conflict_emits_conflict_metric() -> KernelResult<()> {
+async fn commit_conflict_emits_conflict_metric() -> KernelResult<(), Box<dyn std::error::Error>> {
     // GIVEN a table at v0 (00.json) and a snapshot pinned to it.
     let (_temp_dir, table_url) = setup_empty_table()?;
     let (engine, reporter, _guard) = measuring_engine(Arc::new(LocalFileSystem::new()));
@@ -299,7 +300,9 @@ async fn commit_conflict_emits_conflict_metric() -> KernelResult<()> {
 #[case::path_based(false)]
 #[case::catalog_managed(true)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn commit_success_carries_table_type(#[case] catalog_managed: bool) -> KernelResult<()> {
+async fn commit_success_carries_table_type(
+    #[case] catalog_managed: bool,
+) -> KernelResult<(), Box<dyn std::error::Error>> {
     let (_temp_dir, table_path, engine) = test_table_setup_mt()?;
     let table_url = delta_kernel::try_parse_uri(&table_path)?;
     create_simple_table(engine.as_ref(), &table_path, catalog_managed)?;
@@ -335,7 +338,8 @@ async fn commit_success_carries_table_type(#[case] catalog_managed: bool) -> Ker
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn commit_dv_update_reports_updated_file_count_not_batch_count() -> KernelResult<()> {
+async fn commit_dv_update_reports_updated_file_count_not_batch_count(
+) -> KernelResult<(), Box<dyn std::error::Error>> {
     // Three files get a new deletion vector in a single update_deletion_vectors call.
     // num_dv_updates must be the count of updated FILES (3), not the number of scan-metadata
     // batches they arrive in -- a single batch carrying all three would otherwise report 1.
@@ -383,7 +387,8 @@ async fn commit_dv_update_reports_updated_file_count_not_batch_count() -> Kernel
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn commit_dv_update_accumulates_file_count_across_calls() -> KernelResult<()> {
+async fn commit_dv_update_accumulates_file_count_across_calls(
+) -> KernelResult<(), Box<dyn std::error::Error>> {
     // num_dv_updates must accumulate (`+=`) across multiple update_deletion_vectors calls on one
     // transaction: two calls updating one file each must report 2, not the last call's 1.
     let schema = schema_ref! {

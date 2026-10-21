@@ -330,8 +330,16 @@ fn expected_error_matches(expected: &ExpectedError, actual: &Error) -> bool {
     }
 }
 
-fn validate_expected_error(actual: &Error, expected: &ExpectedError) -> KernelResult<(), String> {
-    if expected_error_matches(expected, actual) {
+fn validate_expected_error(
+    actual: &delta_kernel::Error,
+    expected: &ExpectedError,
+) -> KernelResult<(), String> {
+    let matches = match actual {
+        delta_kernel::Error::Kernel(error) => expected_error_matches(expected, error),
+        delta_kernel::Error::Delta(error) => error.condition().name() == expected.error_code,
+        _ => false,
+    };
+    if matches {
         debug!(
             "Got expected error '{}' with message: {:?}\nKernel error: {}",
             expected.error_code, expected.error_message, actual
@@ -405,7 +413,7 @@ fn read_expected_data(expected_dir: &Path) -> KernelResult<RecordBatch, String> 
 
 /// Validate read results against expected outcome.
 pub fn validate_read_result(
-    result: KernelResult<ReadResult>,
+    result: delta_kernel::Result<ReadResult>,
     expected_dir: &Path,
     expected: &ReadExpected,
 ) -> KernelResult<(), String> {
@@ -449,7 +457,7 @@ pub fn validate_read_result(
 
 /// Validate snapshot result against expected outcome.
 pub fn validate_snapshot(
-    result: KernelResult<SnapshotResult>,
+    result: delta_kernel::Result<SnapshotResult>,
     time_travel: Option<&TimeTravel>,
     expected: &SnapshotExpected,
 ) -> KernelResult<(), String> {
@@ -527,17 +535,24 @@ mod tests {
     #[test]
     fn expected_error_rejects_unrelated_kernel_error() {
         let expected = expected_error("DELTA_STATE_RECOVER_ERROR");
-        assert!(validate_expected_error(&Error::MissingMetadata, &expected).is_ok());
         assert!(validate_expected_error(
-            &Error::InvalidCheckpoint(
+            &delta_kernel::Error::Kernel(Error::MissingMetadata),
+            &expected
+        )
+        .is_ok());
+        assert!(validate_expected_error(
+            &delta_kernel::Error::Kernel(Error::InvalidCheckpoint(
                 "Had a _last_checkpoint hint but didn't find any checkpoints".to_string()
-            ),
+            )),
             &expected
         )
         .is_ok());
 
-        let error = validate_expected_error(&Error::FileNotFound("x".into()), &expected)
-            .expect_err("wrong error category must fail");
+        let error = validate_expected_error(
+            &delta_kernel::Error::Kernel(Error::FileNotFound("x".into())),
+            &expected,
+        )
+        .expect_err("wrong error category must fail");
         assert!(error.contains("Expected error category 'DELTA_STATE_RECOVER_ERROR'"));
     }
 

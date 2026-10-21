@@ -1899,7 +1899,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_basic_build() -> KernelResult<()> {
+    fn test_basic_build() -> KernelResult<(), Box<dyn std::error::Error>> {
         let table = TestTableBuilder::new().build()?;
         let engine = table.engine();
         let snap = Snapshot::builder_for(table.table_root()).build(&engine)?;
@@ -1908,7 +1908,7 @@ mod tests {
     }
 
     #[test]
-    fn test_commits_only() -> KernelResult<()> {
+    fn test_commits_only() -> KernelResult<(), Box<dyn std::error::Error>> {
         let table = TestTableBuilder::new()
             .with_log_state(LogState::with_latest_version(2))
             .build()?;
@@ -1954,7 +1954,9 @@ mod tests {
     }
 
     #[rstest_reuse::apply(feature_sets)]
-    fn test_feature_sets_enable_table_features(feature_set: FeatureSet) -> KernelResult<()> {
+    fn test_feature_sets_enable_table_features(
+        feature_set: FeatureSet,
+    ) -> KernelResult<(), Box<dyn std::error::Error>> {
         let expected_features = feature_set.expected_features();
         let table = TestTableBuilder::new().with_features(feature_set).build()?;
         let engine = table.engine();
@@ -1979,7 +1981,7 @@ mod tests {
     }
 
     #[test]
-    fn test_table_config_properties_applied() -> KernelResult<()> {
+    fn test_table_config_properties_applied() -> KernelResult<(), Box<dyn std::error::Error>> {
         let table = TestTableBuilder::new()
             .with_table_config(
                 TableConfig::new()
@@ -2082,7 +2084,7 @@ mod tests {
     }
 
     #[test]
-    fn test_checkpoint_and_commits() -> KernelResult<()> {
+    fn test_checkpoint_and_commits() -> KernelResult<(), Box<dyn std::error::Error>> {
         let log_state = LogState::with_latest_version(4).with_checkpoint_at([2]);
         let table = TestTableBuilder::new()
             .with_log_state(log_state.clone())
@@ -2157,7 +2159,7 @@ mod tests {
     )]
     fn test_log_state_checkpoint_shapes_land_on_disk(
         #[case] log_state: LogState,
-    ) -> KernelResult<()> {
+    ) -> KernelResult<(), Box<dyn std::error::Error>> {
         let expected_version = log_state.latest_version();
         let table = TestTableBuilder::new()
             .with_log_state(log_state.clone())
@@ -2189,7 +2191,8 @@ mod tests {
     /// forward, and pick up the actual latest checkpoint at the higher version --
     /// not the stale-hinted older one.
     #[test]
-    fn test_stale_hint_recovery_resolves_to_actual_latest_checkpoint() -> KernelResult<()> {
+    fn test_stale_hint_recovery_resolves_to_actual_latest_checkpoint(
+    ) -> KernelResult<(), Box<dyn std::error::Error>> {
         let log_state = LogState::with_latest_version(5)
             .with_checkpoint_at([2, 4])
             .with_last_checkpoint_hint(LastCheckpointHintState::Stale);
@@ -2204,7 +2207,7 @@ mod tests {
     }
 
     #[test]
-    fn test_scan_with_column_mapping() -> KernelResult<()> {
+    fn test_scan_with_column_mapping() -> KernelResult<(), Box<dyn std::error::Error>> {
         let table = TestTableBuilder::new()
             .with_log_state(LogState::with_latest_version(1))
             .with_features(FeatureSet::new().column_mapping("name"))
@@ -2221,7 +2224,7 @@ mod tests {
     }
 
     #[test]
-    fn test_scan_with_data() -> KernelResult<()> {
+    fn test_scan_with_data() -> KernelResult<(), Box<dyn std::error::Error>> {
         let table = TestTableBuilder::new()
             .with_log_state(LogState::with_latest_version(1))
             .with_data(2, 5)
@@ -2240,7 +2243,8 @@ mod tests {
     /// Uses `rows_per_file = NULL_RATE_EVERY_NTH * 3` so each file has exactly three null
     /// rows per column.
     #[test]
-    fn test_sparse_null_injection_in_generated_data() -> KernelResult<()> {
+    fn test_sparse_null_injection_in_generated_data() -> KernelResult<(), Box<dyn std::error::Error>>
+    {
         let rows_per_file = NULL_RATE_EVERY_NTH * 3;
         let table = TestTableBuilder::new()
             .with_log_state(LogState::with_latest_version(1))
@@ -2276,7 +2280,9 @@ mod tests {
     #[rstest::rstest]
     #[case::partitioned(partitioned())]
     #[case::clustered(clustered())]
-    fn test_layout_column_null_injection(#[case] config: DataLayoutConfig) -> KernelResult<()> {
+    fn test_layout_column_null_injection(
+        #[case] config: DataLayoutConfig,
+    ) -> KernelResult<(), Box<dyn std::error::Error>> {
         let rows_per_file = NULL_RATE_EVERY_NTH * 3;
         // Only partition columns are protected from nulling; clustering columns are not.
         let protected_columns = if config.is_partitioned() {
@@ -2323,7 +2329,7 @@ mod tests {
     fn test_data_layout_table(
         #[case] config: DataLayoutConfig,
         #[case] expected_schema: SchemaRef,
-    ) -> KernelResult<()> {
+    ) -> KernelResult<(), Box<dyn std::error::Error>> {
         // 2 versions means v0 (create_table) + v1 (1 data commit with 10 rows)
         let table = TestTableBuilder::new()
             .with_log_state(LogState::with_latest_version(1))
@@ -2343,7 +2349,7 @@ mod tests {
     }
 
     #[test]
-    fn test_clustered_table_multiple_versions() -> KernelResult<()> {
+    fn test_clustered_table_multiple_versions() -> KernelResult<(), Box<dyn std::error::Error>> {
         // v0=create, v1-v3=data commits, 10 rows each
         let table = TestTableBuilder::new()
             .with_log_state(LogState::with_latest_version(3))
@@ -2363,7 +2369,7 @@ mod tests {
     }
 
     #[test]
-    fn test_with_clustering_columns_directly() -> KernelResult<()> {
+    fn test_with_clustering_columns_directly() -> KernelResult<(), Box<dyn std::error::Error>> {
         let table = TestTableBuilder::new()
             .with_log_state(LogState::with_latest_version(1))
             .with_schema(clustered_schema())
@@ -2377,7 +2383,7 @@ mod tests {
     }
 
     #[test]
-    fn test_nested_struct_schema_round_trip() -> KernelResult<()> {
+    fn test_nested_struct_schema_round_trip() -> KernelResult<(), Box<dyn std::error::Error>> {
         let schema = schema_ref! {
             nullable "id": LONG,
             nullable "inner": {
@@ -2462,7 +2468,8 @@ mod tests {
     }
 
     #[test]
-    fn test_cleanup_commits_before_deletes_old_files_and_rebuilds() -> KernelResult<()> {
+    fn test_cleanup_commits_before_deletes_old_files_and_rebuilds(
+    ) -> KernelResult<(), Box<dyn std::error::Error>> {
         // Checkpoints at v=1 (below cutoff), v=3 (at cutoff), v=5 (above cutoff)
         // exercise both the deletion and preservation paths for checkpoint files.
         let log_state = LogState::with_latest_version(5)

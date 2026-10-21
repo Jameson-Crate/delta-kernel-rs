@@ -72,7 +72,7 @@ async fn insert_rows(
     >,
     start_val: i32,
     count: i32,
-) -> KernelResult<()> {
+) -> KernelResult<(), Box<dyn std::error::Error>> {
     let mut snap = Snapshot::builder_for(table_url.clone()).build(engine.as_ref())?;
     for val in start_val..(start_val + count) {
         let committed = insert_data(snap, engine, vec![Arc::new(Int32Array::from(vec![val]))])
@@ -95,11 +95,14 @@ async fn insert_rows(
 ///
 /// Uses `TokioMultiThreadExecutor` because `snapshot.checkpoint()` issues nested
 /// `block_on` calls; `TokioBackgroundExecutor` deadlocks in that pattern.
-async fn setup_table_with_v1_checkpoint() -> KernelResult<(
-    Url,
-    Arc<DefaultEngine<TokioMultiThreadExecutor>>,
-    tempfile::TempDir,
-)> {
+async fn setup_table_with_v1_checkpoint() -> KernelResult<
+    (
+        Url,
+        Arc<DefaultEngine<TokioMultiThreadExecutor>>,
+        tempfile::TempDir,
+    ),
+    Box<dyn std::error::Error>,
+> {
     let (temp_dir, table_path, setup_engine) = test_table_setup_mt()?;
     let table_url = delta_kernel::try_parse_uri(&table_path)?;
 

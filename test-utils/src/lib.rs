@@ -1160,7 +1160,7 @@ pub fn test_read(
     expected: &ArrowEngineData,
     url: &Url,
     engine: Arc<dyn Engine>,
-) -> KernelResult<()> {
+) -> delta_kernel::Result<()> {
     let snapshot = Snapshot::builder_for(url.clone()).build(engine.as_ref())?;
     let scan = snapshot.scan_builder().build()?;
     let batches = read_scan(&scan, engine)?;
@@ -1317,7 +1317,7 @@ impl Committer for TestCatalogCommitter {
 pub fn load_and_begin_transaction(
     table_url: impl AsRef<str>,
     engine: &dyn Engine,
-) -> KernelResult<Transaction> {
+) -> delta_kernel::Result<Transaction> {
     load_and_begin_transaction_with(
         table_url,
         engine,
@@ -1340,7 +1340,7 @@ pub fn load_and_begin_transaction_with(
     engine_info: impl Into<String>,
     data_change: bool,
     configure: impl FnOnce(UpdateTableTransactionBuilder) -> UpdateTableTransactionBuilder,
-) -> KernelResult<Transaction> {
+) -> delta_kernel::Result<Transaction> {
     let snapshot = Snapshot::builder_for(table_url).build(engine)?;
     begin_transaction_with(
         snapshot,
@@ -1350,6 +1350,7 @@ pub fn load_and_begin_transaction_with(
         data_change,
         configure,
     )
+    .map_err(delta_kernel::Error::Kernel)
 }
 
 // Helper function to set json values in a serde_json Values
@@ -2011,7 +2012,7 @@ pub fn create_table_and_load_snapshot(
     schema: SchemaRef,
     engine: &dyn Engine,
     properties: &[(&str, &str)],
-) -> KernelResult<Arc<Snapshot>> {
+) -> delta_kernel::Result<Arc<Snapshot>> {
     use delta_kernel::committer::FileSystemCommitter;
     use delta_kernel::transaction::create_table::create_table;
 

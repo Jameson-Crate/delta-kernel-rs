@@ -61,7 +61,10 @@ fn count_total_scan_rows(
 #[test_log::test(rstest::rstest)]
 #[case::with_dv("./tests/data/table-with-dv-small/", 8)]
 #[case::without_dv("./tests/data/table-without-dv-small/", 10)]
-fn test_table_scan(#[case] table_path: &str, #[case] expected_rows: usize) -> KernelResult<()> {
+fn test_table_scan(
+    #[case] table_path: &str,
+    #[case] expected_rows: usize,
+) -> KernelResult<(), Box<dyn std::error::Error>> {
     let path = std::fs::canonicalize(PathBuf::from(table_path))?;
     let url = url::Url::from_directory_path(path).unwrap();
     let engine = test_utils::create_default_engine(&url)?;
@@ -136,7 +139,7 @@ fn verify_sorted_scan_results(
 /// 5. Commits the deletion vectors in a transaction
 /// 6. Verifies that scanning only returns non-deleted rows
 #[tokio::test]
-async fn test_write_deletion_vectors_end_to_end() -> KernelResult<()> {
+async fn test_write_deletion_vectors_end_to_end() -> KernelResult<(), Box<dyn std::error::Error>> {
     let _ = tracing_subscriber::fmt::try_init();
 
     // Create a table schema with id and value columns
@@ -336,7 +339,7 @@ async fn test_write_deletion_vectors_end_to_end() -> KernelResult<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_dv_update_stats_tight_bound(
     #[case] initial_tight_bounds: Option<bool>,
-) -> KernelResult<()> {
+) -> KernelResult<(), Box<dyn std::error::Error>> {
     // Nested schema: a `point` struct with two leaf columns.
     let schema = schema_ref! {
         nullable "point": { nullable "x": INTEGER, nullable "y": INTEGER },

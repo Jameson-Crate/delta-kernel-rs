@@ -1941,7 +1941,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_domain_metadata() -> KernelResult<()> {
+    async fn test_domain_metadata() -> KernelResult<(), Box<dyn std::error::Error>> {
         let table_root = "memory:///test_table/";
         let store = Arc::new(InMemory::new());
         let engine = SyncEngine::new_with_store(store.clone());
@@ -2086,7 +2086,7 @@ mod tests {
         #[case] expected: Option<i64>,
         #[case] expected_error: Option<&str>,
         #[case] table_root: &str,
-    ) -> KernelResult<()> {
+    ) -> KernelResult<(), Box<dyn std::error::Error>> {
         let store = Arc::new(InMemory::new());
         let engine = SyncEngine::new_with_store(store.clone());
         commit(
@@ -2236,7 +2236,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_timestamp_enablement_version_in_future() -> KernelResult<()> {
+    async fn test_get_timestamp_enablement_version_in_future(
+    ) -> KernelResult<(), Box<dyn std::error::Error>> {
         // Test invalid state where snapshot has enablement version in the future - should error
         let table_root = "memory:///test_table/";
         let store = Arc::new(InMemory::new());
@@ -2287,7 +2288,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_timestamp_missing_ict_when_enabled() -> KernelResult<()> {
+    async fn test_get_timestamp_missing_ict_when_enabled(
+    ) -> KernelResult<(), Box<dyn std::error::Error>> {
         // Test missing ICT when it should be present - should error
         let table_root = "memory:///test_table/";
         let store = Arc::new(InMemory::new());
@@ -2320,7 +2322,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_timestamp_fails_when_commit_missing() -> KernelResult<()> {
+    async fn test_get_timestamp_fails_when_commit_missing(
+    ) -> KernelResult<(), Box<dyn std::error::Error>> {
         // When ICT is enabled but commit file is not found in log segment,
         // get_in_commit_timestamp should return an error
 
@@ -2358,7 +2361,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_timestamp_with_checkpoint_and_commit_same_version() -> KernelResult<()> {
+    async fn test_get_timestamp_with_checkpoint_and_commit_same_version(
+    ) -> KernelResult<(), Box<dyn std::error::Error>> {
         // Test the scenario where both checkpoint and commit exist at the same version with ICT
         // enabled.
         let table_root = "memory:///test_table/";
@@ -2434,7 +2438,9 @@ mod tests {
     #[rstest]
     #[case::ict_disabled(false)]
     #[case::ict_enabled(true)]
-    fn test_get_timestamp_returns_valid_timestamp(#[case] ict_enabled: bool) -> KernelResult<()> {
+    fn test_get_timestamp_returns_valid_timestamp(
+        #[case] ict_enabled: bool,
+    ) -> KernelResult<(), Box<dyn std::error::Error>> {
         let temp_dir = tempfile::tempdir().unwrap();
         let table_path = Url::from_directory_path(temp_dir.path())
             .unwrap()
@@ -2475,7 +2481,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_timestamp_errors_when_commit_file_missing(
         #[case] ict_enabled: bool,
-    ) -> KernelResult<()> {
+    ) -> KernelResult<(), Box<dyn std::error::Error>> {
         let url = Url::parse("memory:///")?;
         let store = Arc::new(InMemory::new());
         let engine = SyncEngine::new_with_store(store.clone());
@@ -2521,7 +2527,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_timestamp_preserves_commit_read_error() -> KernelResult<()> {
+    async fn test_get_timestamp_preserves_commit_read_error(
+    ) -> KernelResult<(), Box<dyn std::error::Error>> {
         let table_root = "memory:///";
         let store = Arc::new(InMemory::new());
         let engine = SyncEngine::new_with_store(store.clone());
@@ -2558,7 +2565,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_timestamp_errors_when_ict_missing_from_commit_info() -> KernelResult<()> {
+    async fn test_get_timestamp_errors_when_ict_missing_from_commit_info(
+    ) -> KernelResult<(), Box<dyn std::error::Error>> {
         // ICT is enabled and commit file IS present in the log segment, but the commitInfo
         // action does not carry an inCommitTimestamp value (corrupt/incomplete commit).
         let store = Arc::new(InMemory::new());

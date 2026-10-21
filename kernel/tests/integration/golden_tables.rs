@@ -166,7 +166,7 @@ async fn latest_snapshot_test(
     engine: DefaultEngine<TokioBackgroundExecutor>,
     url: Url,
     expected_path: Option<PathBuf>,
-) -> KernelResult<()> {
+) -> KernelResult<(), Box<dyn std::error::Error>> {
     let snapshot = Snapshot::builder_for(url).build(&engine)?;
     let scan = snapshot.scan_builder().build()?;
     let scan_res = scan.execute(Arc::new(engine))?;
@@ -237,7 +237,7 @@ macro_rules! golden_test {
     ($test_name:literal, $test_fn:expr) => {
         paste! {
             #[tokio::test]
-            async fn [<golden_ $test_name:snake>]() -> KernelResult<()> {
+            async fn [<golden_ $test_name:snake>]() -> KernelResult<(), Box<dyn std::error::Error>> {
                 // we don't use _test_dir but we don't want it to go out of scope before the test
                 // is done since it will cleanup the directory when it runs drop
                 let (engine, table, expected, _test_dir) = setup_golden_table($test_name);

@@ -212,7 +212,7 @@ pub async fn write_data_and_check_result_and_stats(
     schema: SchemaRef,
     engine: Arc<DefaultEngine<TokioBackgroundExecutor>>,
     expected_since_commit: u64,
-) -> KernelResult<()> {
+) -> delta_kernel::Result<()> {
     let mut txn = test_utils::load_and_begin_transaction_with(
         table_url.clone(),
         engine.as_ref(),
@@ -282,7 +282,7 @@ pub fn set_table_properties(
     engine: &dyn Engine,
     current_version: Version,
     properties: &[(&str, &str)],
-) -> KernelResult<Arc<Snapshot>> {
+) -> KernelResult<Arc<Snapshot>, Box<dyn std::error::Error>> {
     let v0_path = std::path::Path::new(table_path).join("_delta_log/00000000000000000000.json");
     let mut meta: serde_json::Value = std::fs::read_to_string(&v0_path)?
         .lines()
@@ -300,7 +300,7 @@ pub fn set_table_properties(
     let new_commit = std::path::Path::new(table_path)
         .join(format!("_delta_log/{:020}.json", current_version + 1));
     std::fs::write(&new_commit, serde_json::to_string(&meta)?)?;
-    Snapshot::builder_for(table_url.clone()).build(engine)
+    Ok(Snapshot::builder_for(table_url.clone()).build(engine)?)
 }
 
 /// Assert that the snapshot's column mapping mode matches the given `cm_mode` string,
@@ -377,7 +377,7 @@ pub async fn create_dv_table_with_files(
     schema: Arc<StructType>,
     partition_values: &[(&str, Option<&str>)],
     file_paths: &[&str],
-) -> KernelResult<(
+) -> delta_kernel::Result<(
     Arc<DynObjectStore>,
     Arc<dyn delta_kernel::Engine>,
     Url,
@@ -506,7 +506,7 @@ pub async fn write_deletion_vector_to_store(
 pub fn create_dv_update_transaction(
     table_url: &Url,
     engine: &dyn Engine,
-) -> KernelResult<Transaction> {
+) -> delta_kernel::Result<Transaction> {
     Snapshot::builder_for(table_url.clone())
         .build(engine)?
         .update_table(UpdateTableOperation::Delete, "test engine", true)
@@ -514,4 +514,5 @@ pub fn create_dv_update_transaction(
             engine,
             Box::new(delta_kernel::committer::FileSystemCommitter::new()),
         )
+        .map_err(delta_kernel::Error::Kernel)
 }

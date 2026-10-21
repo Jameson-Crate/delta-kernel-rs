@@ -1362,7 +1362,7 @@ impl Scan {
     /// # use url::Url;
     /// # use test_utils::delta_kernel_default_engine::DefaultEngineBuilder;
     /// # use delta_kernel::object_store::local::LocalFileSystem;
-    /// # fn main() -> KernelResult<()> {
+    /// # fn main() -> KernelResult<(), Box<dyn std::error::Error>> {
     /// let engine = Arc::new(DefaultEngineBuilder::new(Arc::new(LocalFileSystem::new())).build());
     /// let table_root = Url::parse("file:///path/to/table")?;
     ///

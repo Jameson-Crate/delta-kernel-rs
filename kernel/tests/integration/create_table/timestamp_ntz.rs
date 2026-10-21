@@ -44,7 +44,7 @@ fn test_create_table_with_timestamp_ntz(
         StructType,
     >,
     #[values("none", "name", "id")] cm_mode: &str,
-) -> KernelResult<()> {
+) -> KernelResult<(), Box<dyn std::error::Error>> {
     let (_temp_dir, table_path, engine) = test_table_setup()?;
 
     let _ = create_table(&table_path, schema.clone(), "Test/1.0", true)
@@ -84,7 +84,7 @@ fn test_create_table_with_timestamp_ntz(
 
 /// A schema without TimestampNTZ columns should not add the timestampNtz feature.
 #[test]
-fn test_create_table_no_timestamp_ntz_no_feature() -> KernelResult<()> {
+fn test_create_table_no_timestamp_ntz_no_feature() -> KernelResult<(), Box<dyn std::error::Error>> {
     let (_temp_dir, table_path, engine) = test_table_setup()?;
 
     let schema = schema_ref! {
@@ -110,7 +110,7 @@ fn test_create_table_no_timestamp_ntz_no_feature() -> KernelResult<()> {
 
 /// A schema with both TimestampNTZ and Variant columns enables both features.
 #[test]
-fn test_create_table_timestamp_ntz_and_variant() -> KernelResult<()> {
+fn test_create_table_timestamp_ntz_and_variant() -> KernelResult<(), Box<dyn std::error::Error>> {
     let (_temp_dir, table_path, engine) = test_table_setup()?;
 
     let schema = schema_ref! {

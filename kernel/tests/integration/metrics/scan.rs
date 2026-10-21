@@ -23,7 +23,8 @@ use super::{measuring_engine, LogState, TestTableBuilder};
 /// actions for scan metadata), so `json_read_calls` is non-zero even after the
 /// reporter reset.
 #[test]
-fn scan_execute_contributes_parquet_data_file_reads() -> KernelResult<()> {
+fn scan_execute_contributes_parquet_data_file_reads() -> KernelResult<(), Box<dyn std::error::Error>>
+{
     let table = TestTableBuilder::new()
         .with_log_state(LogState::with_latest_version(2))
         .with_data(1, 1)

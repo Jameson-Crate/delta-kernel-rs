@@ -864,7 +864,7 @@ mod tests {
         miri,
         ignore = "local-filesystem commit calls `linkat`, unsupported under Miri"
     )]
-    async fn test_partitioned_append() -> KernelResult<()> {
+    async fn test_partitioned_append() -> KernelResult<(), Box<dyn std::error::Error>> {
         // Partition column `part` is listed last in the schema; the physical write schema must
         // exclude it (CM=none, partition columns are not materialized).
         let schema = schema_ref! {
@@ -3977,7 +3977,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_update_table_txn_builder_applies_nested_schema_changes() -> KernelResult<()> {
+    async fn test_update_table_txn_builder_applies_nested_schema_changes(
+    ) -> KernelResult<(), Box<dyn std::error::Error>> {
         let (store, kernel_engine, table_url) =
             test_utils::engine_store_setup("test_nested_schema_changes", None);
         let nested =
@@ -4177,7 +4178,7 @@ mod tests {
     fn assert_no_active_files(
         kernel_engine: &Arc<dyn delta_kernel::Engine>,
         table_path: &str,
-    ) -> KernelResult<()> {
+    ) -> KernelResult<(), Box<dyn std::error::Error>> {
         let snapshot =
             delta_kernel::snapshot::Snapshot::builder_for(delta_kernel::try_parse_uri(table_path)?)
                 .build(kernel_engine.as_ref())?;
@@ -4208,14 +4209,17 @@ mod tests {
     async fn setup_remove_files_test(
         store: &Arc<DynObjectStore>,
         table_url: &Url,
-    ) -> KernelResult<(
-        Box<dyn delta_kernel::EngineData>,
-        Vec<bool>,
-        Handle<ExclusiveUpdateTableTransaction>,
-        Handle<SharedExternEngine>,
-        Arc<dyn delta_kernel::Engine>,
-        String,
-    )> {
+    ) -> KernelResult<
+        (
+            Box<dyn delta_kernel::EngineData>,
+            Vec<bool>,
+            Handle<ExclusiveUpdateTableTransaction>,
+            Handle<SharedExternEngine>,
+            Arc<dyn delta_kernel::Engine>,
+            String,
+        ),
+        Box<dyn std::error::Error>,
+    > {
         let (table_path, engine) = create_table_with_one_file(store, table_url).await?;
         let table_path_str = table_path.as_str();
 
@@ -4248,7 +4252,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_remove_files_with_null_sv_commits_and_removes_all() -> KernelResult<()> {
+    async fn test_remove_files_with_null_sv_commits_and_removes_all(
+    ) -> KernelResult<(), Box<dyn std::error::Error>> {
         let (store, _test_engine, table_url) =
             test_utils::engine_store_setup("test_remove_files", None);
         let (data, sv, txn, engine, kernel_engine, table_path) =
@@ -4299,7 +4304,7 @@ mod tests {
 
     /// End-to-end FFI round trip for connector-authored deletion vector updates.
     #[tokio::test]
-    async fn test_dv_update_round_trip_via_ffi() -> KernelResult<()> {
+    async fn test_dv_update_round_trip_via_ffi() -> KernelResult<(), Box<dyn std::error::Error>> {
         use delta_kernel::actions::deletion_vector_writer::{
             KernelDeletionVector, StreamingDeletionVectorWriter,
         };
@@ -4464,7 +4469,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_remove_files_with_non_empty_sv_exercises_from_raw_parts() -> KernelResult<()> {
+    async fn test_remove_files_with_non_empty_sv_exercises_from_raw_parts(
+    ) -> KernelResult<(), Box<dyn std::error::Error>> {
         // Exercises the from_raw_parts code path in the remove_files FFI wrapper by passing
         // a non-null selection vector pointer with non-zero length. The null-SV test always
         // passes a null pointer because scan_metadata for a single-file table returns an

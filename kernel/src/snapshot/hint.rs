@@ -467,20 +467,26 @@ mod tests {
         expected: &str,
     ) {
         let error = builder.with_snapshot_hint(hint).build(engine).unwrap_err();
-        assert!(matches!(&error, KernelError::SnapshotHint(_)));
+        assert!(matches!(
+            &error,
+            delta_kernel::Error::Kernel(KernelError::SnapshotHint(_))
+        ));
         assert!(
             error.to_string().contains(expected),
             "expected error to contain {expected:?}, got {error}"
         );
     }
 
-    fn assert_log_segment_hint_error(result: KernelResult<SnapshotRef>, expected_source: &str) {
+    fn assert_log_segment_hint_error(
+        result: delta_kernel::Result<SnapshotRef>,
+        expected_source: &str,
+    ) {
         let error = result.unwrap_err();
         assert_eq!(
             error.to_string(),
             "Invalid snapshot hint: supplied log files do not form a valid log segment"
         );
-        let KernelError::SnapshotHint(source) = error else {
+        let delta_kernel::Error::Kernel(KernelError::SnapshotHint(source)) = error else {
             panic!("expected SnapshotHint")
         };
         let source = source
@@ -696,7 +702,7 @@ mod tests {
         #[case] expected_published_version: Option<Version>,
         #[values(false, true)] foreign_table: bool,
         #[values(false, true)] reverse_paths: bool,
-    ) -> KernelResult<()> {
+    ) -> KernelResult<(), Box<dyn std::error::Error>> {
         const TABLE_ROOT: &str = "memory:///target/";
         const LOG_ROOT: &str = "memory:///target/_delta_log/";
 
@@ -728,6 +734,7 @@ mod tests {
             None,
             SnapshotHintFreshness::Unverified,
         )
+        .map_err(delta_kernel::Error::Kernel)
         .and_then(|hint| {
             SnapshotBuilder::new_for(TABLE_ROOT)
                 .with_snapshot_hint(hint)
@@ -737,7 +744,7 @@ mod tests {
         if foreign_table {
             assert!(matches!(
                 result.unwrap_err(),
-                KernelError::SnapshotHint(source)
+                delta_kernel::Error::Kernel(KernelError::SnapshotHint(source))
                     if matches!(
                         &*source,
                         SnapshotHintError::LogPathOutsideRoot { path, log_root }
@@ -815,7 +822,7 @@ mod tests {
         } else {
             assert!(matches!(
                 result.unwrap_err(),
-                KernelError::SnapshotHint(source)
+                delta_kernel::Error::Kernel(KernelError::SnapshotHint(source))
                     if matches!(
                         &*source,
                         SnapshotHintError::LogPathOutsideRoot { path, log_root }
@@ -992,7 +999,7 @@ mod tests {
         let error = result.unwrap_err();
         assert!(matches!(
             error,
-            KernelError::SnapshotHint(source)
+            delta_kernel::Error::Kernel(KernelError::SnapshotHint(source))
                 if matches!(
                     &*source,
                     SnapshotHintError::LogPathOutsideRoot { path, log_root }
@@ -1204,7 +1211,10 @@ mod tests {
             .with_snapshot_hint(hint)
             .build(engine.as_ref())
             .unwrap_err();
-        assert!(matches!(err, KernelError::SnapshotHint(_)));
+        assert!(matches!(
+            err,
+            delta_kernel::Error::Kernel(KernelError::SnapshotHint(_))
+        ));
         Ok(())
     }
 
@@ -1297,7 +1307,7 @@ mod tests {
             .with_snapshot_hint(hint)
             .build(engine.as_ref())
             .unwrap_err();
-        let KernelError::SnapshotHint(source) = err else {
+        let delta_kernel::Error::Kernel(KernelError::SnapshotHint(source)) = err else {
             panic!("expected SnapshotHint")
         };
         let source = source
@@ -1408,7 +1418,10 @@ mod tests {
             .with_max_catalog_version(hint.version + 1)
             .with_snapshot_hint(hint)
             .build(engine.as_ref());
-        assert!(matches!(&result, Err(KernelError::SnapshotHint(_))));
+        assert!(matches!(
+            &result,
+            Err(delta_kernel::Error::Kernel(KernelError::SnapshotHint(_)))
+        ));
         assert_result_error_with_message(result, "does not match snapshot hint version");
         let events = reporter.events();
         assert_eq!(events.len(), 1);
@@ -1485,7 +1498,12 @@ mod tests {
             .with_max_catalog_version(0)
             .with_snapshot_hint(lower_bound_hint)
             .build(engine.as_ref());
-        assert!(matches!(result, Err(KernelError::MaxCatalogVersion(_))));
+        assert!(matches!(
+            result,
+            Err(delta_kernel::Error::Kernel(KernelError::MaxCatalogVersion(
+                _
+            )))
+        ));
 
         let hinted = SnapshotBuilder::new_for(&table_root)
             .at_version(1)

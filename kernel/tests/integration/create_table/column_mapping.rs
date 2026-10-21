@@ -139,7 +139,8 @@ pub(super) fn assert_column_mapping_config(snapshot: &Snapshot, expected_mode: C
 }
 
 #[test]
-fn test_create_table_with_column_mapping_name_mode() -> KernelResult<()> {
+fn test_create_table_with_column_mapping_name_mode() -> KernelResult<(), Box<dyn std::error::Error>>
+{
     let (_temp_dir, table_path, engine) = test_table_setup()?;
 
     let schema = simple_schema()?;
@@ -172,7 +173,7 @@ fn test_create_table_with_column_mapping_name_mode() -> KernelResult<()> {
 }
 
 #[test]
-fn test_create_table_with_column_mapping_id_mode() -> KernelResult<()> {
+fn test_create_table_with_column_mapping_id_mode() -> KernelResult<(), Box<dyn std::error::Error>> {
     let (_temp_dir, table_path, engine) = test_table_setup()?;
 
     let schema = schema_ref! { nullable "id": INTEGER };
@@ -198,7 +199,7 @@ fn test_create_table_with_column_mapping_id_mode() -> KernelResult<()> {
 }
 
 #[test]
-fn test_column_mapping_mode_none_no_annotations() -> KernelResult<()> {
+fn test_column_mapping_mode_none_no_annotations() -> KernelResult<(), Box<dyn std::error::Error>> {
     let (_temp_dir, table_path, engine) = test_table_setup()?;
 
     let schema = simple_schema()?;
@@ -230,7 +231,7 @@ fn test_column_mapping_mode_none_no_annotations() -> KernelResult<()> {
 /// is in the protocol but column mapping is not active (mode resolves to `None`).
 /// The schema should NOT have column mapping IDs or physical names.
 #[test]
-fn test_column_mapping_feature_only_without_mode() -> KernelResult<()> {
+fn test_column_mapping_feature_only_without_mode() -> KernelResult<(), Box<dyn std::error::Error>> {
     let (_temp_dir, table_path, engine) = test_table_setup()?;
 
     let schema = simple_schema()?;
@@ -290,7 +291,7 @@ fn test_create_table_strips_stale_column_mapping_when_disabled(
         ColumnMetadataKey::ParquetFieldNestedIds
     )]
     key: ColumnMetadataKey,
-) -> KernelResult<()> {
+) -> KernelResult<(), Box<dyn std::error::Error>> {
     let (_temp_dir, table_path, engine) = test_table_setup()?;
 
     let schema = schema_ref! {
@@ -324,7 +325,7 @@ fn test_create_table_column_mapping_strip_is_none_mode_only(
     #[case] expected_mode: ColumnMappingMode,
     #[case] properties: &[(&str, &str)],
     #[case] annotation_kept: bool,
-) -> KernelResult<()> {
+) -> KernelResult<(), Box<dyn std::error::Error>> {
     let (_temp_dir, table_path, engine) = test_table_setup()?;
 
     let schema = schema_ref! {
@@ -354,7 +355,7 @@ fn test_create_table_column_mapping_strip_is_none_mode_only(
 fn test_create_clustered_table_with_column_mapping(
     #[case] clustering_cols: &[&str],
     #[case] description: &str,
-) -> KernelResult<()> {
+) -> KernelResult<(), Box<dyn std::error::Error>> {
     let (_temp_dir, table_path, engine) = test_table_setup()?;
 
     let schema = simple_schema()?;
@@ -404,7 +405,7 @@ fn test_create_clustered_table_with_column_mapping(
 }
 
 #[test]
-fn test_column_mapping_nested_schema() -> KernelResult<()> {
+fn test_column_mapping_nested_schema() -> KernelResult<(), Box<dyn std::error::Error>> {
     let (_temp_dir, table_path, engine) = test_table_setup()?;
 
     // Create nested schema
@@ -463,7 +464,8 @@ fn test_column_mapping_nested_schema() -> KernelResult<()> {
 /// E2E test: create a table with column mapping on a schema containing map and array types,
 /// then read it back via snapshot and verify column mapping metadata survives the roundtrip.
 #[test]
-fn test_column_mapping_schema_with_maps_and_arrays() -> KernelResult<()> {
+fn test_column_mapping_schema_with_maps_and_arrays() -> KernelResult<(), Box<dyn std::error::Error>>
+{
     let (_temp_dir, table_path, engine) = test_table_setup()?;
 
     // Schema:
@@ -532,7 +534,7 @@ fn clustering_cm_test_schema() -> Arc<StructType> {
 fn test_create_clustered_table_nested_with_column_mapping(
     #[case] col_paths: Vec<Vec<&str>>,
     #[case] cm_mode: &str,
-) -> KernelResult<()> {
+) -> KernelResult<(), Box<dyn std::error::Error>> {
     use delta_kernel::expressions::ColumnName;
 
     let (_temp_dir, table_path, engine) = test_table_setup()?;
@@ -600,7 +602,7 @@ fn test_create_clustered_table_nested_with_column_mapping(
 #[case::multiple_columns(&["id", "date"])]
 fn test_partitioned_table_stores_logical_column_names_with_column_mapping(
     #[case] partition_cols: &[&str],
-) -> KernelResult<()> {
+) -> KernelResult<(), Box<dyn std::error::Error>> {
     let (_temp_dir, table_path, engine) = test_table_setup()?;
     let schema = super::partition_test_schema()?;
 
@@ -716,7 +718,7 @@ fn test_create_table_preserves_or_fills_cm_metadata(
     #[case] field: StructField,
     #[case] expected_id: Option<i64>,
     #[case] expected_physical: Option<&str>,
-) -> KernelResult<()> {
+) -> KernelResult<(), Box<dyn std::error::Error>> {
     let (_temp_dir, table_path, engine) = test_table_setup()?;
     let schema = schema_ref! { (field) };
 
@@ -755,7 +757,8 @@ fn test_create_table_preserves_or_fills_cm_metadata(
 /// preserved max, in field order, and `maxColumnId` (checked by `assert_column_mapping_config`)
 /// lands on the largest assigned id.
 #[test]
-fn test_create_table_sparse_preserved_ids_seed_assignment() -> KernelResult<()> {
+fn test_create_table_sparse_preserved_ids_seed_assignment(
+) -> KernelResult<(), Box<dyn std::error::Error>> {
     let (_temp_dir, table_path, engine) = test_table_setup()?;
 
     let schema = schema_ref! {
@@ -800,7 +803,8 @@ fn test_create_table_sparse_preserved_ids_seed_assignment() -> KernelResult<()> 
 /// Preserved CM metadata under a nested struct is kept verbatim; bare fields elsewhere are
 /// assigned ids strictly above the nested preserved max, in field order.
 #[test]
-fn test_create_table_preserves_preexisting_metadata_in_nested_types() -> KernelResult<()> {
+fn test_create_table_preserves_preexisting_metadata_in_nested_types(
+) -> KernelResult<(), Box<dyn std::error::Error>> {
     let (_temp_dir, table_path, engine) = test_table_setup()?;
 
     // Nested struct with one fully-annotated leaf preserved at id=42.

@@ -1,5 +1,5 @@
 use delta_kernel::snapshot::SnapshotHintError;
-use delta_kernel::{KernelError, KernelResult};
+use delta_kernel::{DeltaErrorCondition, Error, KernelError, KernelResult};
 use tracing::warn;
 
 use crate::handle::Handle;
@@ -81,6 +81,19 @@ pub enum FFIKernelError {
     InvalidGeoParamsError = 52,
     MaxCatalogVersionError = 53,
     TableAlreadyExistsAtPath = 54,
+}
+
+impl From<Error> for FFIKernelError {
+    fn from(error: Error) -> Self {
+        match error {
+            Error::Kernel(error) => error.into(),
+            Error::Delta(error) => match error.condition() {
+                DeltaErrorCondition::DeltaPathDoesNotExist => Self::InvalidTableLocationError,
+                _ => Self::UnknownError,
+            },
+            _ => Self::UnknownError,
+        }
+    }
 }
 
 impl From<KernelError> for FFIKernelError {
@@ -241,7 +254,7 @@ impl<T: ExternEngine + ?Sized> AllocateError for &T {
     }
 }
 
-/// Converts a [`KernelResult`] into an [`ExternResult`], using the engine's error allocator.
+/// Converts a Rust result into an [`ExternResult`], using the engine's error allocator.
 ///
 /// # Safety
 ///
@@ -251,7 +264,7 @@ pub(crate) trait IntoExternResult<T> {
 }
 
 // NOTE: We can't "just" impl From<KernelResult<T>> because we require an error allocator.
-impl<T> IntoExternResult<T> for KernelResult<T> {
+impl<T, E: std::fmt::Display + Into<FFIKernelError>> IntoExternResult<T> for KernelResult<T, E> {
     unsafe fn into_extern_result(self, alloc: &dyn AllocateError) -> ExternResult<T> {
         match self {
             Ok(ok) => ExternResult::Ok(ok),

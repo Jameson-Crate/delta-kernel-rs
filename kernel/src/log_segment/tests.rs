@@ -5435,7 +5435,7 @@ fn new_for_version_zero_rejects_non_commit_file() {
 }
 
 #[test]
-fn test_commit_phase_processes_commits() -> KernelResult<()> {
+fn test_commit_phase_processes_commits() -> KernelResult<(), Box<dyn std::error::Error>> {
     let (engine, snapshot, _tempdir) = load_test_table("app-txn-no-checkpoint")?;
     let log_segment = snapshot.log_segment();
 
@@ -5482,7 +5482,8 @@ fn test_commit_phase_processes_commits() -> KernelResult<()> {
 
 #[cfg(feature = "adaptive-metadata-in-dev")]
 #[test]
-fn latest_checkpoint_action_returns_none_without_checkpoint() -> KernelResult<()> {
+fn latest_checkpoint_action_returns_none_without_checkpoint(
+) -> KernelResult<(), Box<dyn std::error::Error>> {
     let (engine, table_root) = setup_table()?;
     let snapshot = Snapshot::builder_for(table_root).build(&engine)?;
     assert!(snapshot.latest_checkpoint_action(&engine)?.is_none());
@@ -5492,7 +5493,8 @@ fn latest_checkpoint_action_returns_none_without_checkpoint() -> KernelResult<()
 // The log is replayed newest-first, so the most recent `checkpoint` action wins.
 #[cfg(feature = "adaptive-metadata-in-dev")]
 #[test]
-fn latest_checkpoint_action_returns_the_latest_of_multiple() -> KernelResult<()> {
+fn latest_checkpoint_action_returns_the_latest_of_multiple(
+) -> KernelResult<(), Box<dyn std::error::Error>> {
     let (engine, table_root) = setup_table()?;
     write_commit(
         &engine,
@@ -5522,7 +5524,8 @@ fn latest_checkpoint_action_returns_the_latest_of_multiple() -> KernelResult<()>
 // A fresh snapshot does observe it.
 #[cfg(feature = "adaptive-metadata-in-dev")]
 #[test]
-fn latest_checkpoint_action_is_stable_when_newer_checkpoint_written_later() -> KernelResult<()> {
+fn latest_checkpoint_action_is_stable_when_newer_checkpoint_written_later(
+) -> KernelResult<(), Box<dyn std::error::Error>> {
     let (engine, table_root) = setup_table()?;
     write_commit(
         &engine,
@@ -5644,7 +5647,8 @@ async fn amt_last_checkpoint_hint_bounds_listing(
 // the protocol and metadata come from the manifest commit's checkpoint action, not commit 0.
 #[cfg(feature = "adaptive-metadata-in-dev")]
 #[test]
-fn snapshot_with_amt_last_checkpoint_hint_skips_earlier_commits() -> KernelResult<()> {
+fn snapshot_with_amt_last_checkpoint_hint_skips_earlier_commits(
+) -> KernelResult<(), Box<dyn std::error::Error>> {
     let (engine, table_root) = setup_table()?;
     for version in 1..=2 {
         write_commit(

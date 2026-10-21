@@ -985,7 +985,12 @@ pub(super) mod tests {
                 .with_log_tail(log_tail)
                 .build(engine.as_ref());
 
-            assert!(matches!(result, Err(KernelError::MaxCatalogVersion(_))));
+            assert!(matches!(
+                result,
+                Err(delta_kernel::Error::Kernel(KernelError::MaxCatalogVersion(
+                    _
+                )))
+            ));
 
             Ok(())
         }
@@ -999,7 +1004,12 @@ pub(super) mod tests {
                 .with_max_catalog_version(3)
                 .build(engine.as_ref());
 
-            assert!(matches!(result, Err(KernelError::MaxCatalogVersion(_))));
+            assert!(matches!(
+                result,
+                Err(delta_kernel::Error::Kernel(KernelError::MaxCatalogVersion(
+                    _
+                )))
+            ));
 
             Ok(())
         }
@@ -1024,7 +1034,12 @@ pub(super) mod tests {
                 .with_max_catalog_version(3)
                 .build(engine.as_ref());
 
-            assert!(matches!(result, Err(KernelError::MaxCatalogVersion(_))));
+            assert!(matches!(
+                result,
+                Err(delta_kernel::Error::Kernel(KernelError::MaxCatalogVersion(
+                    _
+                )))
+            ));
 
             Ok(())
         }
@@ -1036,7 +1051,12 @@ pub(super) mod tests {
 
             let result = SnapshotBuilder::new_for(table_root).build(engine.as_ref());
 
-            assert!(matches!(result, Err(KernelError::MaxCatalogVersion(_))));
+            assert!(matches!(
+                result,
+                Err(delta_kernel::Error::Kernel(KernelError::MaxCatalogVersion(
+                    _
+                )))
+            ));
 
             Ok(())
         }
@@ -1053,7 +1073,12 @@ pub(super) mod tests {
                 .with_max_catalog_version(0)
                 .build(engine.as_ref());
 
-            assert!(matches!(result, Err(KernelError::MaxCatalogVersion(_))));
+            assert!(matches!(
+                result,
+                Err(delta_kernel::Error::Kernel(KernelError::MaxCatalogVersion(
+                    _
+                )))
+            ));
 
             Ok(())
         }
@@ -1077,7 +1102,12 @@ pub(super) mod tests {
                 .with_max_catalog_version(3)
                 .build(engine.as_ref());
 
-            assert!(matches!(result, Err(KernelError::MaxCatalogVersion(_))));
+            assert!(matches!(
+                result,
+                Err(delta_kernel::Error::Kernel(KernelError::MaxCatalogVersion(
+                    _
+                )))
+            ));
 
             Ok(())
         }
@@ -1131,7 +1161,12 @@ pub(super) mod tests {
             // Incremental update without mcv should fail
             let result = SnapshotBuilder::new_from(initial).build(engine.as_ref());
 
-            assert!(matches!(result, Err(KernelError::MaxCatalogVersion(_))));
+            assert!(matches!(
+                result,
+                Err(delta_kernel::Error::Kernel(KernelError::MaxCatalogVersion(
+                    _
+                )))
+            ));
 
             Ok(())
         }
@@ -1167,7 +1202,9 @@ pub(super) mod tests {
 
             assert!(matches!(
                 result,
-                Err(KernelError::LogTailVersionsNotContiguous { .. })
+                Err(delta_kernel::Error::Kernel(
+                    KernelError::LogTailVersionsNotContiguous { .. }
+                ))
             ));
 
             Ok(())

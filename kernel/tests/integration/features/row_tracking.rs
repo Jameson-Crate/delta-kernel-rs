@@ -91,7 +91,7 @@ async fn write_data_to_table(
     table_url: &Url,
     engine: Arc<DefaultEngine<TokioBackgroundExecutor>>,
     data: Vec<ArrowEngineData>,
-) -> KernelResult<CommitResult> {
+) -> KernelResult<CommitResult, Box<dyn std::error::Error>> {
     let mut txn = load_and_begin_transaction_with(
         table_url.clone(),
         engine.as_ref(),
@@ -117,7 +117,7 @@ async fn write_data_to_table(
     }
 
     // Commit the transaction
-    txn.commit(engine.as_ref())
+    Ok(txn.commit(engine.as_ref())?)
 }
 
 /// Helper function to create a row-tracking table with a single `number: INTEGER` column.
@@ -273,7 +273,7 @@ async fn verify_row_tracking_in_commit(
 }
 
 #[tokio::test]
-async fn test_row_tracking_append() -> KernelResult<()> {
+async fn test_row_tracking_append() -> KernelResult<(), Box<dyn std::error::Error>> {
     // Setup
     let _ = tracing_subscriber::fmt::try_init();
     let tmp_test_dir = tempdir()?;
@@ -316,7 +316,7 @@ async fn test_row_tracking_append() -> KernelResult<()> {
 }
 
 #[tokio::test]
-async fn test_row_tracking_single_record_batches() -> KernelResult<()> {
+async fn test_row_tracking_single_record_batches() -> KernelResult<(), Box<dyn std::error::Error>> {
     // Setup
     let _ = tracing_subscriber::fmt::try_init();
     let tmp_test_dir = tempdir()?;
@@ -350,7 +350,7 @@ async fn test_row_tracking_single_record_batches() -> KernelResult<()> {
 }
 
 #[tokio::test]
-async fn test_row_tracking_large_batch() -> KernelResult<()> {
+async fn test_row_tracking_large_batch() -> KernelResult<(), Box<dyn std::error::Error>> {
     // Setup
     let _ = tracing_subscriber::fmt::try_init();
     let tmp_test_dir = tempdir()?;
@@ -388,7 +388,8 @@ async fn test_row_tracking_large_batch() -> KernelResult<()> {
 }
 
 #[tokio::test]
-async fn test_row_tracking_consecutive_transactions() -> KernelResult<()> {
+async fn test_row_tracking_consecutive_transactions() -> KernelResult<(), Box<dyn std::error::Error>>
+{
     // Setup
     let _ = tracing_subscriber::fmt::try_init();
     let tmp_test_dir = tempdir()?;
@@ -449,7 +450,8 @@ async fn test_row_tracking_consecutive_transactions() -> KernelResult<()> {
 }
 
 #[tokio::test]
-async fn test_row_tracking_three_consecutive_transactions() -> KernelResult<()> {
+async fn test_row_tracking_three_consecutive_transactions(
+) -> KernelResult<(), Box<dyn std::error::Error>> {
     // Setup
     let _ = tracing_subscriber::fmt::try_init();
     let tmp_test_dir = tempdir()?;
@@ -541,7 +543,8 @@ async fn test_row_tracking_three_consecutive_transactions() -> KernelResult<()> 
 }
 
 #[tokio::test]
-async fn test_row_tracking_with_regular_and_empty_adds() -> KernelResult<()> {
+async fn test_row_tracking_with_regular_and_empty_adds(
+) -> KernelResult<(), Box<dyn std::error::Error>> {
     // Setup
     let _ = tracing_subscriber::fmt::try_init();
     let tmp_test_dir = tempdir()?;
@@ -585,7 +588,7 @@ async fn test_row_tracking_with_regular_and_empty_adds() -> KernelResult<()> {
 }
 
 #[tokio::test]
-async fn test_row_tracking_with_empty_adds() -> KernelResult<()> {
+async fn test_row_tracking_with_empty_adds() -> KernelResult<(), Box<dyn std::error::Error>> {
     // Setup
     let _ = tracing_subscriber::fmt::try_init();
     let tmp_test_dir = tempdir()?;
@@ -629,7 +632,7 @@ async fn test_row_tracking_with_empty_adds() -> KernelResult<()> {
 }
 
 #[tokio::test]
-async fn test_row_tracking_without_adds() -> KernelResult<()> {
+async fn test_row_tracking_without_adds() -> KernelResult<(), Box<dyn std::error::Error>> {
     // Setup
     let _ = tracing_subscriber::fmt::try_init();
     let tmp_test_dir = tempdir()?;
@@ -658,7 +661,8 @@ async fn test_row_tracking_without_adds() -> KernelResult<()> {
 }
 
 #[tokio::test]
-async fn test_row_tracking_parallel_transactions_conflict() -> KernelResult<()> {
+async fn test_row_tracking_parallel_transactions_conflict(
+) -> KernelResult<(), Box<dyn std::error::Error>> {
     // Setup
     let _ = tracing_subscriber::fmt::try_init();
     let tmp_test_dir = tempdir()?;
@@ -784,7 +788,8 @@ async fn test_row_tracking_parallel_transactions_conflict() -> KernelResult<()> 
 }
 
 #[tokio::test]
-async fn test_no_row_tracking_fields_without_feature() -> KernelResult<()> {
+async fn test_no_row_tracking_fields_without_feature(
+) -> KernelResult<(), Box<dyn std::error::Error>> {
     // Setup
     let _ = tracing_subscriber::fmt::try_init();
     let tmp_test_dir = tempdir()?;
@@ -891,7 +896,7 @@ fn read_row_commit_version_scan(
 
 /// Basic read: write one file with 3 rows, verify row IDs are sequential starting from 0.
 #[tokio::test]
-async fn test_read_row_ids_basic() -> KernelResult<()> {
+async fn test_read_row_ids_basic() -> KernelResult<(), Box<dyn std::error::Error>> {
     let _ = tracing_subscriber::fmt::try_init();
     let tmp_dir = tempdir()?;
     let (schema, table_url, engine, _store) =
@@ -920,7 +925,7 @@ async fn test_read_row_ids_basic() -> KernelResult<()> {
 /// scan-schema order.
 fn generated_row_tracking_and_partition_columns_preserve_scan_schema_order(
     #[case] column_mapping_mode: &str,
-) -> KernelResult<()> {
+) -> KernelResult<(), Box<dyn std::error::Error>> {
     let table_schema = schema_ref! {
         nullable "value": INTEGER,
         nullable "part_a": STRING,
@@ -1038,7 +1043,7 @@ impl RowTrackingTestCase {
 #[tokio::test]
 async fn test_read_row_commit_versions_use_add_action_defaults(
     #[case] test_case: RowTrackingTestCase,
-) -> KernelResult<()> {
+) -> KernelResult<(), Box<dyn std::error::Error>> {
     let (_temp_dir, table_path, engine) = test_table_setup()?;
     let schema = schema_ref! { nullable "number": INTEGER };
     let table_url = Url::from_directory_path(&table_path)
@@ -1107,7 +1112,8 @@ async fn test_read_row_commit_versions_use_add_action_defaults(
 }
 
 #[tokio::test]
-async fn test_read_row_commit_versions_prefer_materialized_values() -> KernelResult<()> {
+async fn test_read_row_commit_versions_prefer_materialized_values(
+) -> KernelResult<(), Box<dyn std::error::Error>> {
     let tmp_dir = tempdir()?;
     let (_schema, table_url, engine, store) =
         setup_number_table(&tmp_dir, "test_read_materialized_row_commit_versions").await?;
@@ -1197,7 +1203,7 @@ async fn test_read_row_tracking_metadata_stable_across_deletion_vector_update(
     #[case] deleted_indexes: &[u64],
     #[values(MetadataColumnSpec::RowId, MetadataColumnSpec::RowCommitVersion)]
     metadata_column: MetadataColumnSpec,
-) -> KernelResult<()> {
+) -> KernelResult<(), Box<dyn std::error::Error>> {
     let _ = tracing_subscriber::fmt::try_init();
     let tmp_dir = tempdir()?;
     let (schema, table_url, engine, store) = setup_number_table_with_features(
@@ -1298,7 +1304,8 @@ async fn test_read_row_tracking_metadata_stable_across_deletion_vector_update(
 
 /// Multiple files in one commit: each file's row IDs start at its baseRowId with no overlap.
 #[tokio::test]
-async fn test_read_row_ids_multiple_files_one_commit() -> KernelResult<()> {
+async fn test_read_row_ids_multiple_files_one_commit(
+) -> KernelResult<(), Box<dyn std::error::Error>> {
     let _ = tracing_subscriber::fmt::try_init();
     let tmp_dir = tempdir()?;
     let (schema, table_url, engine, _store) =
@@ -1347,7 +1354,7 @@ async fn test_read_row_ids_multiple_files_one_commit() -> KernelResult<()> {
 
 /// Multiple commits: row IDs are globally unique and monotonically increasing across commits.
 #[tokio::test]
-async fn test_read_row_ids_multiple_commits() -> KernelResult<()> {
+async fn test_read_row_ids_multiple_commits() -> KernelResult<(), Box<dyn std::error::Error>> {
     let _ = tracing_subscriber::fmt::try_init();
     let tmp_dir = tempdir()?;
     let (schema, table_url, engine, _store) =
@@ -1391,7 +1398,8 @@ async fn test_read_row_ids_multiple_commits() -> KernelResult<()> {
 /// instead, which requires a multi-threaded runtime to delegate work to other workers.
 /// Writes use the standard `TokioBackgroundExecutor` engine, matching all other tests in this file.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_read_row_tracking_values_after_checkpoint() -> KernelResult<()> {
+async fn test_read_row_tracking_values_after_checkpoint(
+) -> KernelResult<(), Box<dyn std::error::Error>> {
     let _ = tracing_subscriber::fmt::try_init();
     let tmp_dir = tempdir()?;
     let (schema, table_url, engine, _store) =
@@ -1456,7 +1464,8 @@ async fn test_read_row_tracking_values_after_checkpoint() -> KernelResult<()> {
 ///
 /// Row index is file-local (resets to 0 per file); row ID is global (baseRowId + row_index).
 #[tokio::test]
-async fn test_read_row_ids_coexist_with_row_index() -> KernelResult<()> {
+async fn test_read_row_ids_coexist_with_row_index() -> KernelResult<(), Box<dyn std::error::Error>>
+{
     let _ = tracing_subscriber::fmt::try_init();
     let tmp_dir = tempdir()?;
     let (schema, table_url, engine, _store) =
@@ -1543,7 +1552,7 @@ async fn test_read_row_ids_coexist_with_row_index() -> KernelResult<()> {
 /// metadata survive compaction without being dropped or corrupted.
 #[tokio::test]
 #[ignore = "log compaction is not yet supported, tracked in #2337"]
-async fn test_read_row_ids_after_log_compaction() -> KernelResult<()> {
+async fn test_read_row_ids_after_log_compaction() -> KernelResult<(), Box<dyn std::error::Error>> {
     let _ = tracing_subscriber::fmt::try_init();
     let tmp_dir = tempdir()?;
     let (schema, table_url, engine, store) =

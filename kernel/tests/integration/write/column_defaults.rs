@@ -207,7 +207,8 @@ fn test_schema_with_column_defaults_overwrites_existing_default() {
 }
 
 #[tokio::test]
-async fn test_blind_append_to_column_defaults_table_is_supported() -> KernelResult<()> {
+async fn test_blind_append_to_column_defaults_table_is_supported(
+) -> KernelResult<(), Box<dyn std::error::Error>> {
     let schema = schema_ref! {
         nullable "id": LONG,
         nullable "name": STRING,
@@ -264,7 +265,7 @@ async fn write_state_acknowledgement_depends_on_column_defaults(
     #[case] label: &str,
     #[case] partition_columns: &[&str],
     #[values(false, true)] has_default: bool,
-) -> KernelResult<()> {
+) -> KernelResult<(), Box<dyn std::error::Error>> {
     let base = schema! {
         nullable "c": INTEGER,
         nullable "p": INTEGER,
@@ -331,7 +332,7 @@ async fn write_state_acknowledgement_depends_on_column_defaults(
 async fn assert_materialized_column_default_round_trips(
     data_type: DataType,
     default_sql: &str,
-) -> KernelResult<()> {
+) -> KernelResult<(), Box<dyn std::error::Error>> {
     let extra_features: &[&str] = if data_type == DataType::TIMESTAMP_NTZ {
         &["timestampNtz"]
     } else {
@@ -414,7 +415,7 @@ async fn assert_materialized_column_default_round_trips(
 async fn test_materialized_primitive_column_default_round_trips(
     #[case] data_type: DataType,
     #[case] default_sql: &str,
-) -> KernelResult<()> {
+) -> KernelResult<(), Box<dyn std::error::Error>> {
     assert_materialized_column_default_round_trips(data_type, default_sql).await
 }
 
@@ -424,7 +425,7 @@ async fn test_materialized_primitive_column_default_round_trips(
 #[tokio::test]
 async fn test_transaction_top_level_column_defaults_excludes_nested_defaults(
     #[case] partition_columns: &[&str],
-) -> KernelResult<()> {
+) -> KernelResult<(), Box<dyn std::error::Error>> {
     let nested_default = StructField::nullable("inner", DataType::INTEGER).add_metadata([(
         ColumnMetadataKey::CurrentDefault.as_ref().to_string(),
         MetadataValue::String("7".to_string()),
@@ -504,7 +505,7 @@ async fn test_load_and_write_tolerate_v3_unverifiable_default(
     #[case] field_type: DataType,
     #[case] default_sql: &str,
     #[case] warning_text: &str,
-) -> KernelResult<()> {
+) -> KernelResult<(), Box<dyn std::error::Error>> {
     let base = schema! { nullable "c": (field_type) };
     let schema = schema_with_column_defaults(&base, HashMap::from([("c", default_sql)]))?;
 
@@ -560,7 +561,8 @@ async fn test_load_rejects_non_string_column_default() -> KernelResult<()> {
 /// Orphaned column-default metadata (a `CURRENT_DEFAULT` without the `allowColumnDefaults`
 /// feature) is tolerated: the snapshot loads and a write context builds without error.
 #[tokio::test]
-async fn test_load_and_write_allow_orphan_default() -> KernelResult<()> {
+async fn test_load_and_write_allow_orphan_default() -> KernelResult<(), Box<dyn std::error::Error>>
+{
     let base = schema! { nullable "c": INTEGER };
     let schema = schema_with_column_defaults(&base, HashMap::from([("c", "42")]))?;
 
@@ -591,7 +593,7 @@ async fn test_variant_column_default_validation_at_snapshot_load(
     #[case] label: &str,
     #[case] default_sql: &str,
     #[case] expected_error: Option<&str>,
-) -> KernelResult<()> {
+) -> KernelResult<(), Box<dyn std::error::Error>> {
     let variant_type = DataType::unshredded_variant();
     let base = schema! { nullable "v": (variant_type) };
     let schema = schema_with_column_defaults(&base, HashMap::from([("v", default_sql)]))?;
@@ -650,7 +652,7 @@ async fn test_load_tolerates_unmaterializable_default(
     #[case] label: &str,
     #[case] data_type: DataType,
     #[case] default_sql: &str,
-) -> KernelResult<()> {
+) -> KernelResult<(), Box<dyn std::error::Error>> {
     let base = schema! { nullable "c": (data_type) };
     let schema = schema_with_column_defaults(&base, HashMap::from([("c", default_sql)]))?;
 
@@ -679,7 +681,8 @@ async fn test_load_tolerates_unmaterializable_default(
 }
 
 #[test]
-fn test_column_default_composes_with_deletion_vectors() -> KernelResult<()> {
+fn test_column_default_composes_with_deletion_vectors(
+) -> KernelResult<(), Box<dyn std::error::Error>> {
     let source_path = fs::canonicalize("./tests/data/table-with-dv-small/")?;
     let temp_dir = tempfile::tempdir()?;
     let table_path = temp_dir.path().join("table-with-dv-and-column-default");
@@ -708,7 +711,8 @@ fn test_column_default_composes_with_deletion_vectors() -> KernelResult<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_defaulted_clustering_column_round_trips_with_stats() -> KernelResult<()> {
+async fn test_defaulted_clustering_column_round_trips_with_stats(
+) -> KernelResult<(), Box<dyn std::error::Error>> {
     let (_temp_dir, table_path, engine) = test_table_setup_mt()?;
     let base = schema! {
         nullable "id": LONG,
@@ -873,7 +877,8 @@ async fn test_column_default_round_trips_with_column_mapping_and_checkpoint(
 }
 
 #[tokio::test]
-async fn test_partition_column_default_round_trips_on_read() -> KernelResult<()> {
+async fn test_partition_column_default_round_trips_on_read(
+) -> KernelResult<(), Box<dyn std::error::Error>> {
     let base = schema! {
         nullable "id": LONG,
         nullable "p": INTEGER,
@@ -924,7 +929,8 @@ async fn test_partition_column_default_round_trips_on_read() -> KernelResult<()>
 /// the column-mapping transform (so it is still discoverable by its logical name), and a write
 /// that materializes the default round-trips on read.
 #[tokio::test(flavor = "multi_thread")]
-async fn test_column_default_with_iceberg_compat_v3_e2e() -> KernelResult<()> {
+async fn test_column_default_with_iceberg_compat_v3_e2e(
+) -> KernelResult<(), Box<dyn std::error::Error>> {
     let base = schema! {
         nullable "id": LONG,
         nullable "c": INTEGER,
