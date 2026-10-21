@@ -14,7 +14,7 @@ use crate::metrics::{MetricId, SnapshotLoadMetricContext, SnapshotLoadType};
 use crate::path::DELTA_LOG_DIR_WITH_SLASH;
 use crate::snapshot::{SnapshotHint, SnapshotRef};
 use crate::utils::{require, try_parse_uri, PhantomType};
-use crate::{Engine, KernelError, KernelResult, Snapshot, Version};
+use crate::{DeltaError, Engine, Error, KernelError, KernelResult, Result, Snapshot, Version};
 
 /// Marker for builders that load a snapshot from a table root.
 #[doc(hidden)]
@@ -31,8 +31,8 @@ pub struct FromSnapshot;
 /// ```no_run
 /// # use delta_kernel::{Snapshot, Engine};
 /// # use url::Url;
-/// # fn example(engine: &dyn Engine) -> delta_kernel::KernelResult<()> {
-/// let table_root = Url::parse("file:///path/to/table")?;
+/// # fn example(engine: &dyn Engine) -> delta_kernel::Result<()> {
+/// let table_root = Url::parse("file:///path/to/table").map_err(delta_kernel::KernelError::from)?;
 ///
 /// // Build a snapshot
 /// let snapshot = Snapshot::builder_for(table_root.clone())
@@ -318,6 +318,11 @@ impl<Mode> SnapshotBuilder<Mode> {
     ///
     /// - `engine`: Implementation of [`Engine`] apis.
     ///
+    /// # Errors
+    ///
+    /// For builds without a snapshot hint, returns a [`DeltaError`] with the original cause if
+    /// parsing the table root fails. Other loading and validation failures use [`Error::Kernel`].
+    ///
     /// [`MetricEvent::SnapshotBuildSuccess`]: crate::metrics::MetricEvent::SnapshotBuildSuccess
     /// [`MetricEvent::SnapshotBuildFailure`]: crate::metrics::MetricEvent::SnapshotBuildFailure
     // `is_catalog_managed` is the requested load mode, not the confirmed protocol
@@ -328,7 +333,7 @@ impl<Mode> SnapshotBuilder<Mode> {
         fields(path = %self.table_path(), report, enable_call_frame, version = tracing::field::Empty, operation_id = %self.operation_id, is_catalog_managed = self.max_catalog_version.is_some(), correlation_id = self.correlation_id.as_deref().unwrap_or(""), load_type = self.load_type().as_ref()),
         err
     )]
-    pub fn build(self, engine: &dyn Engine) -> KernelResult<SnapshotRef> {
+    pub fn build(self, engine: &dyn Engine) -> Result<SnapshotRef> {
         // Fold the context into the message string rather than passing structured fields: this
         // `info!` fires inside the `snap.build` metrics span, where any field the
         // `SnapshotBuildSuccess` event doesn't recognize would trip a spurious "Invalid field"
@@ -391,10 +396,14 @@ impl<Mode> SnapshotBuilder<Mode> {
             let built_as_latest = version.is_none() || version == max_catalog_version;
 
             if let Some(table_root) = table_root {
-                let table_url = try_parse_uri(table_root)?;
+                let table_url = try_parse_uri(&table_root).map_err(|err| {
+                    DeltaError::delta_path_does_not_exist(&table_root).with_source(err)
+                })?;
                 let log_segment = LogSegment::for_snapshot(
                     engine.storage_handler().as_ref(),
-                    table_url.join(DELTA_LOG_DIR_WITH_SLASH)?,
+                    table_url
+                        .join(DELTA_LOG_DIR_WITH_SLASH)
+                        .map_err(KernelError::from)?,
                     log_tail,
                     effective_version,
                     metric_context.clone(),
@@ -411,9 +420,9 @@ impl<Mode> SnapshotBuilder<Mode> {
                 .map(Into::into)?
             } else {
                 let Some(existing_snapshot) = existing_snapshot else {
-                    return Err(KernelError::internal_error(
+                    return Err(Error::Kernel(KernelError::internal_error(
                         "SnapshotBuilder should have either table_root or existing_snapshot",
-                    ));
+                    )));
                 };
                 Snapshot::try_new_from(
                     existing_snapshot,
@@ -520,6 +529,7 @@ impl<Mode> SnapshotBuilder<Mode> {
 
 #[cfg(test)]
 pub(super) mod tests {
+    use std::error::Error as _;
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -566,6 +576,31 @@ pub(super) mod tests {
         )
         .await?;
         Ok(())
+    }
+
+    #[test]
+    fn missing_table_path_returns_delta_error_with_original_cause() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let missing_path = temp_dir.path().join("missing");
+        let (engine, _, _) = setup_test();
+        let error = SnapshotBuilder::new_for(missing_path.to_str().unwrap())
+            .build(engine.as_ref())
+            .unwrap_err();
+        let Error::Delta(error) = error else {
+            panic!("expected a Delta error for the missing table path");
+        };
+        assert_eq!(
+            error.condition(),
+            crate::DeltaErrorCondition::DeltaPathDoesNotExist
+        );
+        assert_eq!(
+            error.parameters()[0].value(),
+            missing_path.to_string_lossy()
+        );
+        assert!(matches!(
+            error.source().unwrap().downcast_ref::<KernelError>(),
+            Some(KernelError::InvalidTableLocation(_))
+        ));
     }
 
     #[test_log::test(tokio::test)]

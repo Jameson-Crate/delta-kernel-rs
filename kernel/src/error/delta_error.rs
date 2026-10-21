@@ -3,8 +3,16 @@
 use std::backtrace::Backtrace;
 use std::error::Error as StdError;
 use std::fmt;
+use std::path::Path;
 
 use super::DeltaErrorCondition;
+
+/// Builds diagnostic parameters in the supplied order, stringifying each value.
+macro_rules! delta_parameters {
+    ($($name:expr => $value:expr),* $(,)?) => {
+        vec![$(DeltaErrorParameter::new($name, $value)),*]
+    };
+}
 
 /// A catalog-defined Delta failure that terminates the current operation.
 ///
@@ -60,23 +68,34 @@ impl DeltaError {
         &self.backtrace
     }
 
-    /// Creates an error with an optional diagnostic cause and captures its backtrace.
+    /// Returns this error with `source` attached as its diagnostic cause, replacing any prior
+    /// cause.
+    #[must_use]
+    pub fn with_source(
+        mut self,
+        source: impl Into<Box<dyn StdError + Send + Sync + 'static>>,
+    ) -> Self {
+        self.source = Some(source.into());
+        self
+    }
+
+    /// Creates a missing-path failure with `path` as its diagnostic table location.
+    pub fn delta_path_does_not_exist(path: impl AsRef<Path>) -> Self {
+        DeltaError::new(
+            DeltaErrorCondition::DeltaPathDoesNotExist,
+            delta_parameters!["path" => path.as_ref().display()],
+        )
+    }
+
+    /// Creates an error without a diagnostic cause and captures its backtrace.
     ///
     /// `parameters` must contain exactly [`DeltaErrorCondition::parameter_names`], in that order.
     /// Condition-specific factories must maintain this invariant.
-    #[allow(
-        dead_code,
-        reason = "Construction is reserved for condition-specific factories."
-    )]
-    fn new(
-        condition: DeltaErrorCondition,
-        parameters: Vec<DeltaErrorParameter>,
-        source: Option<Box<dyn StdError + Send + Sync + 'static>>,
-    ) -> Self {
+    fn new(condition: DeltaErrorCondition, parameters: Vec<DeltaErrorParameter>) -> Self {
         Self {
             condition,
             parameters: parameters.into_boxed_slice(),
-            source,
+            source: None,
             backtrace: Backtrace::capture(),
         }
     }
@@ -109,10 +128,6 @@ impl DeltaErrorParameter {
         &self.value
     }
 
-    #[allow(
-        dead_code,
-        reason = "Construction is reserved for condition-specific factories."
-    )]
     fn new(name: &'static str, value: impl ToString) -> Self {
         Self {
             name,
@@ -141,4 +156,55 @@ fn render_template(
         output.write_char('<')?;
     }
     output.write_str(remaining)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io;
+
+    use super::*;
+
+    #[test]
+    fn delta_parameters_render_mixed_value_types() {
+        let error = DeltaError::new(
+            DeltaErrorCondition::DeltaLogFileNotFound,
+            delta_parameters![
+                "version" => 42_u64,
+                "checkpointVersion" => 40_u64,
+                "logPath" => "s3://bucket/table/_delta_log/",
+            ],
+        );
+        assert_eq!(
+            error.message(),
+            "Unable to retrieve the delta log files to construct table version 42 starting from \
+             checkpoint version 40 at s3://bucket/table/_delta_log/."
+        );
+    }
+
+    #[test]
+    fn with_source_preserves_diagnostics_and_replaces_cause() {
+        let error = DeltaError::delta_path_does_not_exist("<path>/table");
+        assert!(error.source().is_none());
+        let condition = error.condition();
+        let sql_state = error.sql_state();
+        let message = error.message();
+
+        let error = error.with_source(io::Error::new(io::ErrorKind::NotFound, "missing directory"));
+        assert_eq!(error.condition(), condition);
+        assert_eq!(error.sql_state(), sql_state);
+        assert_eq!(error.message(), message);
+        assert_eq!(error.parameters()[0].name(), "path");
+        assert_eq!(error.parameters()[0].value(), "<path>/table");
+        let source = error.source().unwrap().downcast_ref::<io::Error>().unwrap();
+        assert_eq!(source.kind(), io::ErrorKind::NotFound);
+
+        let replacement: Box<dyn StdError + Send + Sync> = Box::new(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "access denied",
+        ));
+        let error = error.with_source(replacement);
+        assert_eq!(error.message(), message);
+        let source = error.source().unwrap().downcast_ref::<io::Error>().unwrap();
+        assert_eq!(source.kind(), io::ErrorKind::PermissionDenied);
+    }
 }

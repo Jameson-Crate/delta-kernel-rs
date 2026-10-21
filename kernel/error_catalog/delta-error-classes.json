@@ -1,2 +1,57 @@
 {
+  "DELTA_ADAPTIVE_METADATA_REQUIRES_COLUMN_MAPPING_ID_MODE": {
+    "message": [
+      "The table feature '<feature>' requires column mapping mode 'id', but the table property '<prop>' is set to '<mode>'. Recreate the table with '<prop>' = 'id', or omit the property to have it set automatically."
+    ],
+    "sqlState": "42000"
+  },
+  "DELTA_DUPLICATE_COLUMNS_FOUND": {
+    "message": [
+      "Found duplicate column(s): <duplicateCols>."
+    ],
+    "sqlState": "42711",
+    "subClass": {
+      "EXISTING_SCHEMA": {
+        "message": [
+          "The duplicate was found in the existing table schema."
+        ]
+      },
+      "PARTITION_COLUMNS": {
+        "message": [
+          "The duplicate was found in the partition columns."
+        ]
+      }
+    }
+  },
+  "DELTA_LOG_FILE_NOT_FOUND": {
+    "message": [
+      "Unable to retrieve the delta log files to construct table version <version> starting from checkpoint version <checkpointVersion> at <logPath>."
+    ],
+    "sqlState": "42K03"
+  },
+  "DELTA_PARSING_UNSUPPORTED_DATA_TYPE": {
+    "message": [
+      "DataType <dataType> is not supported."
+    ],
+    "sqlState": "KD009"
+  },
+  "DELTA_PARTITION_COLUMN_NOT_FOUND": {
+    "message": [
+      "Partition column <columnName> not found in schema [<schemaMap>]"
+    ],
+    "sqlState": "42703"
+  },
+  "DELTA_PATH_DOES_NOT_EXIST": {
+    "message": [
+      "<path> doesn't exist, or is not a Delta table."
+    ],
+    "sqlState": "42K03"
+  },
+  "DELTA_VERSIONS_NOT_CONTIGUOUS": {
+    "message": [
+      "Versions (<versionList>) are not contiguous. ",
+      "A gap in the delta log between versions <startVersion> and <endVersion> was detected while trying to load version <versionToLoad>."
+    ],
+    "sqlState": "KD00C"
+  }
 }
