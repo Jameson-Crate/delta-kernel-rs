@@ -2188,7 +2188,7 @@ mod tests {
     fn transaction_constructor_initializes_all_defaults(
         #[values(false, true)] expected_data_change: bool,
         #[values("", "test-engine")] expected_engine_info: &str,
-    ) -> KernelResult<(), Box<dyn std::error::Error>> {
+    ) -> delta_kernel::Result<()> {
         let (_engine, snapshot, _tempdir) = load_test_table("table-without-dv-small")?;
         let _guard = tracing::subscriber::set_default(tracing_subscriber::registry());
         let expected_span = tracing::info_span!("transaction_constructor_defaults");
@@ -2278,8 +2278,7 @@ mod tests {
     }
 
     #[test]
-    fn transaction_constructor_generates_unique_operation_ids(
-    ) -> KernelResult<(), Box<dyn std::error::Error>> {
+    fn transaction_constructor_generates_unique_operation_ids() -> delta_kernel::Result<()> {
         let (_engine, snapshot, _tempdir) = load_test_table("table-without-dv-small")?;
         let first = Transaction::<UpdateTable>::new(
             TransactionBuilderState::default(),
@@ -2303,8 +2302,7 @@ mod tests {
     }
 
     #[test]
-    fn transaction_constructor_preserves_shared_intent(
-    ) -> KernelResult<(), Box<dyn std::error::Error>> {
+    fn transaction_constructor_preserves_shared_intent() -> delta_kernel::Result<()> {
         let (_engine, snapshot, _tempdir) = load_test_table("table-without-dv-small")?;
         let expected_parameters = HashMap::from([("mode".into(), Some("Create".into()))]);
         let expected_metrics = HashMap::from([("numFiles".into(), Some("3".into()))]);
@@ -2721,8 +2719,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_changes_are_applied_once_and_persisted_on_commit(
-    ) -> KernelResult<(), Box<dyn std::error::Error>> {
+    fn schema_changes_are_applied_once_and_persisted_on_commit() -> delta_kernel::Result<()> {
         let (engine, txn, _tempdir) = create_existing_table_txn_with(true, |builder| {
             builder.add_column(StructField::nullable("first_column", DataType::INTEGER))
         })?;
@@ -2777,8 +2774,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_add_struct_then_nested_field_is_persisted_on_commit(
-    ) -> KernelResult<(), Box<dyn std::error::Error>> {
+    fn schema_add_struct_then_nested_field_is_persisted_on_commit() -> delta_kernel::Result<()> {
         let (engine, txn, _tempdir) = create_existing_table_txn_with(true, |builder| {
             builder
                 .add_column(StructField::nullable(
@@ -2806,8 +2802,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_changes_can_precede_staged_data_in_the_same_commit(
-    ) -> KernelResult<(), Box<dyn std::error::Error>> {
+    fn schema_changes_can_precede_staged_data_in_the_same_commit() -> delta_kernel::Result<()> {
         let (engine, mut txn, _tempdir) = create_existing_table_txn_with(true, |builder| {
             builder.add_column(StructField::nullable("fresh_column", DataType::INTEGER))
         })?;
@@ -3013,7 +3008,7 @@ mod tests {
     fn snapshot_and_partitioned_write_context(
         table_path: &str,
         partition_values: HashMap<String, Scalar>,
-    ) -> KernelResult<(Arc<Snapshot>, BoundWriteContext), Box<dyn std::error::Error>> {
+    ) -> delta_kernel::Result<(Arc<Snapshot>, BoundWriteContext)> {
         let engine = SyncEngine::new();
         let path = std::fs::canonicalize(PathBuf::from(table_path)).unwrap();
         let url = url::Url::from_directory_path(path).unwrap();
@@ -3058,7 +3053,7 @@ mod tests {
     fn test_partition_columns_materialized_in_logical_to_physical(
         #[case] table_path: &str,
         #[case] materialized: bool,
-    ) -> KernelResult<(), Box<dyn std::error::Error>> {
+    ) -> delta_kernel::Result<()> {
         let (snapshot, wc) = snapshot_and_partitioned_write_context(
             table_path,
             HashMap::from([("letter".to_string(), Scalar::String("a".into()))]),
@@ -3082,7 +3077,8 @@ mod tests {
                 Arc::new(Int64Array::from(vec![42])) as ArrayRef,
                 Arc::new(Float64Array::from(vec![1.5])),
             ],
-        )?;
+        )
+        .map_err(KernelError::from)?;
         let rb = eval_logical_to_physical(&wc, batch)?;
 
         let rb_schema = rb.schema();
@@ -3189,7 +3185,7 @@ mod tests {
     /// Physical schema should include partition columns when materializePartitionColumns is on.
     #[test]
     fn test_physical_schema_includes_partition_columns_when_materialized(
-    ) -> KernelResult<(), Box<dyn std::error::Error>> {
+    ) -> delta_kernel::Result<()> {
         let (_snapshot, write_context) = snapshot_and_partitioned_write_context(
             "./tests/data/partitioned_with_materialize_feature/",
             HashMap::from([("letter".to_string(), Scalar::String("a".into()))]),
@@ -3232,7 +3228,7 @@ mod tests {
         #[case] partition_values: Option<HashMap<String, Scalar>>,
         #[case] expected_msg: &str,
         #[case] unexpected_msg: Option<&str>,
-    ) -> KernelResult<(), Box<dyn std::error::Error>> {
+    ) -> delta_kernel::Result<()> {
         let engine = SyncEngine::new();
         let path = std::fs::canonicalize(PathBuf::from(table_path)).unwrap();
         let url = url::Url::from_directory_path(path).unwrap();
@@ -3285,8 +3281,7 @@ mod tests {
     }
 
     #[test]
-    fn test_update_deletion_vectors_requires_enablement_property(
-    ) -> KernelResult<(), Box<dyn std::error::Error>> {
+    fn test_update_deletion_vectors_requires_enablement_property() -> delta_kernel::Result<()> {
         let (engine, snapshot) = setup_dv_supported_but_disabled_table()?;
         let mut txn = create_dv_transaction(snapshot, engine.as_ref())?;
 
@@ -3592,8 +3587,7 @@ mod tests {
 
     #[cfg(feature = "adaptive-metadata-in-dev")]
     #[test]
-    fn test_commit_rejects_file_actions_on_iceberg_native_v4_table(
-    ) -> KernelResult<(), Box<dyn std::error::Error>> {
+    fn test_commit_rejects_file_actions_on_iceberg_native_v4_table() -> delta_kernel::Result<()> {
         let (engine, mut txn, _tempdir) = create_existing_table_txn()?;
         txn.replace_effective_table_config(adaptive_metadata_table_configuration(
             test_schema_flat_with_column_mapping(),
@@ -3638,10 +3632,10 @@ mod tests {
         #[case] is_create_table: bool,
         #[case] operation: CommitOperation,
         #[case] expected: &str,
-    ) -> KernelResult<(), Box<dyn std::error::Error>> {
+    ) -> delta_kernel::Result<()> {
         // Public builders reject these states. Mutate private intent to test the runtime guard.
         let result = if is_create_table {
-            let tempdir = tempfile::tempdir()?;
+            let tempdir = tempfile::tempdir().map_err(KernelError::from)?;
             let engine = SyncEngine::new();
             let mut txn = create_table(
                 tempdir.path().to_string_lossy(),
@@ -3665,7 +3659,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_blind_append_success() -> KernelResult<(), Box<dyn std::error::Error>> {
+    fn test_validate_blind_append_success() -> delta_kernel::Result<()> {
         let (_engine, mut txn, _tempdir) =
             create_existing_table_txn_with(true, UpdateTableTransactionBuilder::with_blind_append)?;
         add_dummy_file(&mut txn);
@@ -3737,7 +3731,7 @@ mod tests {
         #[case] data_change: bool,
         #[case] selection_vector: &[bool],
         #[case] expected_error: bool,
-    ) -> KernelResult<(), Box<dyn std::error::Error>> {
+    ) -> delta_kernel::Result<()> {
         let (_engine, mut txn, _tempdir) =
             create_existing_table_txn_with(data_change, |builder| builder)?;
         set_append_only(&mut txn, append_only)?;
@@ -3763,7 +3757,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_blind_append_requires_adds() -> KernelResult<(), Box<dyn std::error::Error>> {
+    fn test_validate_blind_append_requires_adds() -> delta_kernel::Result<()> {
         let (_engine, txn, _tempdir) =
             create_existing_table_txn_with(true, UpdateTableTransactionBuilder::with_blind_append)?;
         let result = txn.validate_blind_append_semantics();
@@ -3775,8 +3769,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_blind_append_requires_data_change(
-    ) -> KernelResult<(), Box<dyn std::error::Error>> {
+    fn test_validate_blind_append_requires_data_change() -> delta_kernel::Result<()> {
         let (_engine, mut txn, _tempdir) =
             create_existing_table_txn_with(true, UpdateTableTransactionBuilder::with_blind_append)?;
         // Exercise defensive commit validation of an invalid internal state.
@@ -3791,8 +3784,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_blind_append_rejects_removes() -> KernelResult<(), Box<dyn std::error::Error>>
-    {
+    fn test_validate_blind_append_rejects_removes() -> delta_kernel::Result<()> {
         let (_engine, mut txn, _tempdir) =
             create_existing_table_txn_with(true, UpdateTableTransactionBuilder::with_blind_append)?;
         add_dummy_file(&mut txn);
@@ -3809,8 +3801,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_blind_append_rejects_dv_updates(
-    ) -> KernelResult<(), Box<dyn std::error::Error>> {
+    fn test_validate_blind_append_rejects_dv_updates() -> delta_kernel::Result<()> {
         let (_engine, mut txn, _tempdir) =
             create_existing_table_txn_with(true, UpdateTableTransactionBuilder::with_blind_append)?;
         add_dummy_file(&mut txn);
@@ -3861,7 +3852,7 @@ mod tests {
     }
 
     #[test]
-    fn test_blind_append_commit_rejects_no_adds() -> KernelResult<(), Box<dyn std::error::Error>> {
+    fn test_blind_append_commit_rejects_no_adds() -> delta_kernel::Result<()> {
         let (_engine, txn, _tempdir) =
             create_existing_table_txn_with(true, UpdateTableTransactionBuilder::with_blind_append)?;
         // No files added — commit should fail with blind append validation
@@ -3877,7 +3868,7 @@ mod tests {
     }
 
     #[test]
-    fn test_blind_append_commit_success() -> KernelResult<(), Box<dyn std::error::Error>> {
+    fn test_blind_append_commit_success() -> delta_kernel::Result<()> {
         let (engine, mut txn, _tempdir) =
             create_existing_table_txn_with(true, UpdateTableTransactionBuilder::with_blind_append)?;
         add_dummy_file(&mut txn);
@@ -3901,8 +3892,7 @@ mod tests {
     // the full deletion vector write workflow including the DvMatchVisitor logic.
 
     #[test]
-    fn test_commit_io_error_returns_retryable_transaction(
-    ) -> KernelResult<(), Box<dyn std::error::Error>> {
+    fn test_commit_io_error_returns_retryable_transaction() -> delta_kernel::Result<()> {
         let (engine, snapshot, _tempdir) = load_test_table("table-without-dv-small")?;
         let mut txn = snapshot
             .update_table(UpdateTableOperation::Write, "test-engine", true)
@@ -3924,7 +3914,7 @@ mod tests {
     }
 
     #[test]
-    fn test_existing_table_txn_debug() -> KernelResult<(), Box<dyn std::error::Error>> {
+    fn test_existing_table_txn_debug() -> delta_kernel::Result<()> {
         let (_engine, txn, _tempdir) = create_existing_table_txn()?;
         let debug_str = format!("{txn:?}");
         // Existing-table transactions should include the snapshot version number
@@ -4454,8 +4444,7 @@ mod tests {
     }
 
     #[test]
-    fn test_commit_metadata_receives_ict_not_wall_time(
-    ) -> KernelResult<(), Box<dyn std::error::Error>> {
+    fn test_commit_metadata_receives_ict_not_wall_time() -> delta_kernel::Result<()> {
         // Set up a table with ICT enabled and a very high previous ICT so that the
         // monotonicity rule (max(wall_time, prev_ict + 1)) produces a value strictly
         // greater than the current wall time. This lets us verify the computed ICT is
@@ -4546,8 +4535,7 @@ mod tests {
     }
 
     #[test]
-    fn test_commit_io_error_emits_retryable_io_failure_metric(
-    ) -> KernelResult<(), Box<dyn std::error::Error>> {
+    fn test_commit_io_error_emits_retryable_io_failure_metric() -> delta_kernel::Result<()> {
         let (engine, snapshot, _tempdir) = load_test_table("table-without-dv-small")?;
         let reporter = Arc::new(CapturingReporter::default());
         let _guard = install_thread_local_metrics_reporter(reporter.clone());
@@ -4564,8 +4552,7 @@ mod tests {
     }
 
     #[test]
-    fn test_commit_terminal_error_emits_error_failure_metric(
-    ) -> KernelResult<(), Box<dyn std::error::Error>> {
+    fn test_commit_terminal_error_emits_error_failure_metric() -> delta_kernel::Result<()> {
         let (engine, snapshot, _tempdir) = load_test_table("table-without-dv-small")?;
         let reporter = Arc::new(CapturingReporter::default());
         let _guard = install_thread_local_metrics_reporter(reporter.clone());

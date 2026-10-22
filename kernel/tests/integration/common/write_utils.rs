@@ -282,9 +282,10 @@ pub fn set_table_properties(
     engine: &dyn Engine,
     current_version: Version,
     properties: &[(&str, &str)],
-) -> KernelResult<Arc<Snapshot>, Box<dyn std::error::Error>> {
+) -> delta_kernel::Result<Arc<Snapshot>> {
     let v0_path = std::path::Path::new(table_path).join("_delta_log/00000000000000000000.json");
-    let mut meta: serde_json::Value = std::fs::read_to_string(&v0_path)?
+    let mut meta: serde_json::Value = std::fs::read_to_string(&v0_path)
+        .map_err(delta_kernel::KernelError::from)?
         .lines()
         .find_map(|line| {
             serde_json::from_str::<serde_json::Value>(line)
@@ -299,8 +300,12 @@ pub fn set_table_properties(
 
     let new_commit = std::path::Path::new(table_path)
         .join(format!("_delta_log/{:020}.json", current_version + 1));
-    std::fs::write(&new_commit, serde_json::to_string(&meta)?)?;
-    Ok(Snapshot::builder_for(table_url.clone()).build(engine)?)
+    std::fs::write(
+        &new_commit,
+        serde_json::to_string(&meta).map_err(delta_kernel::KernelError::from)?,
+    )
+    .map_err(delta_kernel::KernelError::from)?;
+    Snapshot::builder_for(table_url.clone()).build(engine)
 }
 
 /// Assert that the snapshot's column mapping mode matches the given `cm_mode` string,

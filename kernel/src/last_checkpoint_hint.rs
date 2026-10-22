@@ -1331,7 +1331,7 @@ mod tests {
     })]
     fn v2_last_checkpoint_hint_contents(
         #[case] expected: ExpectedHint,
-    ) -> KernelResult<(), Box<dyn std::error::Error>> {
+    ) -> delta_kernel::Result<()> {
         use crate::unit_test_utils::load_test_table;
 
         let ExpectedHint {

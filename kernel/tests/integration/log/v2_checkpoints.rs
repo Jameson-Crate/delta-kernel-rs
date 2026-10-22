@@ -258,7 +258,7 @@ fn v2_checkpoints_parquet_with_last_checkpoint() -> KernelResult<()> {
 /// batches. All batches in a parquet file must share the same schema. This test verifies
 /// that `snapshot.checkpoint()` can write a V2 checkpoint without schema mismatch errors.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_v2_checkpoint_parquet_write() -> KernelResult<(), Box<dyn std::error::Error>> {
+async fn test_v2_checkpoint_parquet_write() -> delta_kernel::Result<()> {
     let (_temp_dir, table_path, engine) = test_table_setup_mt()?;
     let table_url = delta_kernel::try_parse_uri(&table_path)?;
 
@@ -330,7 +330,7 @@ async fn test_v2_checkpoint_parquet_write() -> KernelResult<(), Box<dyn std::err
 /// `_last_checkpoint`, the checkpoint parquet contents, and performs a scan to verify the data
 /// is correct.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_v2_checkpoint_with_sidecars() -> KernelResult<(), Box<dyn std::error::Error>> {
+async fn test_v2_checkpoint_with_sidecars() -> delta_kernel::Result<()> {
     let (_temp_dir, table_path, engine) = test_table_setup_mt()?;
     let table_url = delta_kernel::try_parse_uri(&table_path)?;
 
@@ -574,8 +574,7 @@ async fn test_v2_checkpoint_with_sidecars() -> KernelResult<(), Box<dyn std::err
 /// then read the raw checkpoint parquet to verify `stats_parsed`, `stats`, and
 /// `partitionValues_parsed` fields are correctly populated.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_v2_checkpoint_partition_values_parsed_and_stats(
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+async fn test_v2_checkpoint_partition_values_parsed_and_stats() -> delta_kernel::Result<()> {
     let (_temp_dir, table_path, engine) = test_table_setup_mt()?;
     let table_url = delta_kernel::try_parse_uri(&table_path)?;
 
@@ -766,7 +765,7 @@ async fn test_checkpoint_spec_rejected(
     #[case] enable_v2checkpoint: bool,
     #[case] spec: CheckpointSpec,
     #[case] err_substring: &str,
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+) -> delta_kernel::Result<()> {
     let (_temp_dir, table_path, engine) = test_table_setup_mt()?;
     let table_url = delta_kernel::try_parse_uri(&table_path)?;
 
@@ -796,8 +795,7 @@ async fn test_checkpoint_spec_rejected(
 /// sidecar files, the main checkpoint contains no `sidecar` action rows, and `_last_checkpoint`
 /// reports `numOfAddFiles = 0` and `sizeInBytes` equal to the main checkpoint file size.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_v2_sidecar_checkpoint_with_no_file_actions(
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+async fn test_v2_sidecar_checkpoint_with_no_file_actions() -> delta_kernel::Result<()> {
     let (_temp_dir, table_path, engine) = test_table_setup_mt()?;
     let table_url = delta_kernel::try_parse_uri(&table_path)?;
 
@@ -870,7 +868,7 @@ async fn v2_table_with_domain_metadata_and_txn<E: TaskExecutor>(
     table_path: &str,
     table_url: &url::Url,
     engine: &Arc<test_utils::delta_kernel_default_engine::DefaultEngine<E>>,
-) -> KernelResult<Arc<Snapshot>, Box<dyn std::error::Error>> {
+) -> delta_kernel::Result<Arc<Snapshot>> {
     fn make_info_array(names: &[&str]) -> ArrayRef {
         let name_array: ArrayRef = Arc::new(StringArray::from(
             names.iter().map(|s| Some(*s)).collect::<Vec<_>>(),
@@ -1149,7 +1147,7 @@ async fn create_partitioned_stats_table<E: TaskExecutor>(
     table_path: &str,
     table_url: &url::Url,
     engine: &Arc<test_utils::delta_kernel_default_engine::DefaultEngine<E>>,
-) -> KernelResult<Arc<Snapshot>, Box<dyn std::error::Error>> {
+) -> delta_kernel::Result<Arc<Snapshot>> {
     let schema = schema_ref! {
         nullable "id": LONG,
         nullable "name": STRING,
@@ -1169,7 +1167,9 @@ async fn create_partitioned_stats_table<E: TaskExecutor>(
         nullable "id": LONG,
         nullable "name": STRING,
     };
-    let arrow_schema = Arc::new(ArrowSchema::try_from_kernel(&data_schema)?);
+    let arrow_schema = Arc::new(
+        ArrowSchema::try_from_kernel(&data_schema).map_err(delta_kernel::KernelError::from)?,
+    );
 
     let batch1 = RecordBatch::try_new(
         arrow_schema.clone(),
@@ -1220,7 +1220,7 @@ async fn create_partitioned_stats_table<E: TaskExecutor>(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_snapshot_checkpoint_default_on_v2_table(
     #[case] spec: Option<CheckpointSpec>,
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+) -> delta_kernel::Result<()> {
     let schema = get_simple_schema();
     let (_tmp_dir, table_path, engine) = test_table_setup_mt()?;
     let mut snapshot = create_table_and_load_snapshot(
@@ -1250,8 +1250,11 @@ async fn test_snapshot_checkpoint_default_on_v2_table(
 
     // V2 checkpoint must contain a `checkpointMetadata` column.
     let ckpt_path = load_existing_single_file_checkpoint_path(&table_path, version);
-    let file = std::fs::File::open(&ckpt_path)?;
-    let reader = ParquetRecordBatchReaderBuilder::try_new(file)?.build()?;
+    let file = std::fs::File::open(&ckpt_path).map_err(delta_kernel::KernelError::from)?;
+    let reader = ParquetRecordBatchReaderBuilder::try_new(file)
+        .map_err(delta_kernel::KernelError::from)?
+        .build()
+        .map_err(delta_kernel::KernelError::from)?;
     let schema = reader.schema();
     assert!(
         schema.field_with_name("checkpointMetadata").is_ok(),
@@ -1274,7 +1277,7 @@ async fn test_snapshot_checkpoint_default_on_v2_table(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_v2_sidecar_checkpoint_cross_feature(
     #[case] features: Vec<CrossFeature>,
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+) -> delta_kernel::Result<()> {
     let (_temp_dir, table_path, engine) = test_table_setup_mt()?;
     let table_url = delta_kernel::try_parse_uri(&table_path)?;
 
@@ -1335,7 +1338,7 @@ async fn test_v2_sidecar_checkpoint_cross_feature(
 /// loads from that checkpoint with no trailing commits, and the scan returns the union
 /// of both write phases.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_v2_sidecar_consecutive_checkpoints() -> KernelResult<(), Box<dyn std::error::Error>> {
+async fn test_v2_sidecar_consecutive_checkpoints() -> delta_kernel::Result<()> {
     let (_temp_dir, table_path, engine) = test_table_setup_mt()?;
     let table_url = delta_kernel::try_parse_uri(&table_path)?;
 
@@ -1434,8 +1437,7 @@ async fn test_v2_sidecar_consecutive_checkpoints() -> KernelResult<(), Box<dyn s
 /// On a table with `deletionVectors` + `rowTracking` enabled, insert data, apply DV and write a
 /// V2 sidecar checkpoint. Scan back and make sure the DV and row-tracking columns are present.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_v2_sidecar_preserves_dv_and_row_tracking_on_add(
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+async fn test_v2_sidecar_preserves_dv_and_row_tracking_on_add() -> delta_kernel::Result<()> {
     let (_temp_dir, table_path, engine) = test_table_setup_mt()?;
     let table_url = delta_kernel::try_parse_uri(&table_path)?;
     let schema = get_simple_schema();
@@ -1538,8 +1540,7 @@ async fn test_v2_sidecar_preserves_dv_and_row_tracking_on_add(
 /// across 60 batches of 1000 (so the splitter cuts cleanly at the 50k boundary) must
 /// produce exactly 2 sidecar files.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_v2_sidecar_default_hint_splits_at_50k() -> KernelResult<(), Box<dyn std::error::Error>>
-{
+async fn test_v2_sidecar_default_hint_splits_at_50k() -> delta_kernel::Result<()> {
     const PER_COMMIT: usize = 1_000;
     const COMMITS: usize = 60;
 
@@ -1628,7 +1629,7 @@ async fn build_v2_table_with_feature<E: TaskExecutor>(
     table_url: &url::Url,
     engine: &Arc<test_utils::delta_kernel_default_engine::DefaultEngine<E>>,
     features: &[CrossFeature],
-) -> KernelResult<Arc<Snapshot>, Box<dyn std::error::Error>> {
+) -> delta_kernel::Result<Arc<Snapshot>> {
     let schema = cross_feature_schema();
 
     let mut props: Vec<(&str, &str)> = vec![("delta.feature.v2Checkpoint", "supported")];
@@ -1674,9 +1675,14 @@ async fn build_v2_table_with_feature<E: TaskExecutor>(
             nullable "id": INTEGER,
             nullable "value": STRING,
         };
-        Arc::new(ArrowSchema::try_from_kernel(&data_schema)?)
+        Arc::new(
+            ArrowSchema::try_from_kernel(&data_schema).map_err(delta_kernel::KernelError::from)?,
+        )
     } else {
-        Arc::new(ArrowSchema::try_from_kernel(schema.as_ref())?)
+        Arc::new(
+            ArrowSchema::try_from_kernel(schema.as_ref())
+                .map_err(delta_kernel::KernelError::from)?,
+        )
     };
 
     let writes: [(&str, Vec<i32>, Vec<&str>); 3] = [
@@ -1695,7 +1701,8 @@ async fn build_v2_table_with_feature<E: TaskExecutor>(
             let region_arr: ArrayRef = Arc::new(StringArray::from(vec![region; ids.len()]));
             vec![id_arr, val_arr, region_arr]
         };
-        let batch = RecordBatch::try_new(data_arrow_schema.clone(), columns)?;
+        let batch = RecordBatch::try_new(data_arrow_schema.clone(), columns)
+            .map_err(delta_kernel::KernelError::from)?;
         let pv = if partitioned {
             HashMap::from([("region".to_string(), Scalar::from(region))])
         } else {
@@ -1710,8 +1717,8 @@ async fn build_v2_table_with_feature<E: TaskExecutor>(
 /// A version holding two complete checkpoints must load from the uuid-named one, since it outranks
 /// the classic-named one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn snapshot_selects_uuid_checkpoint_over_classic_at_one_version(
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+async fn snapshot_selects_uuid_checkpoint_over_classic_at_one_version() -> delta_kernel::Result<()>
+{
     let (_temp_dir, table_path, engine) = test_table_setup_mt()?;
     let table_url = delta_kernel::try_parse_uri(&table_path)?;
 

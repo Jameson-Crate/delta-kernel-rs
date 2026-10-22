@@ -72,7 +72,7 @@ fn read_cdf_for_table_with_batch_size(
 }
 
 #[test]
-fn cdf_with_deletion_vector() -> KernelResult<(), Box<dyn std::error::Error>> {
+fn cdf_with_deletion_vector() -> delta_kernel::Result<()> {
     let batches = read_cdf_for_table("cdf-table-with-dv", 0, None, None)?;
     // Each commit performs the following:
     // 0. Insert  0..=9
@@ -118,8 +118,7 @@ fn cdf_with_deletion_vector() -> KernelResult<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-fn cdf_with_deletion_vector_is_batch_size_invariant() -> KernelResult<(), Box<dyn std::error::Error>>
-{
+fn cdf_with_deletion_vector_is_batch_size_invariant() -> delta_kernel::Result<()> {
     let expected = read_cdf_for_table("cdf-table-with-dv", 0, None, None)?;
     for batch_size in [1usize, 2, 3, 4, 7] {
         let actual = read_cdf_for_table_with_batch_size(
@@ -135,7 +134,9 @@ fn cdf_with_deletion_vector_is_batch_size_invariant() -> KernelResult<(), Box<dy
             actual_rows, expected_rows,
             "row count changed at batch_size={batch_size}: got {actual_rows}, want {expected_rows}"
         );
-        let formatted = pretty_format_batches(&expected)?.to_string();
+        let formatted = pretty_format_batches(&expected)
+            .map_err(KernelError::from)?
+            .to_string();
         let mut expected_lines: Vec<&str> = formatted.trim().lines().collect();
         sort_lines!(expected_lines);
         assert_batches_sorted_eq!(expected_lines, &actual);
@@ -144,7 +145,7 @@ fn cdf_with_deletion_vector_is_batch_size_invariant() -> KernelResult<(), Box<dy
 }
 
 #[test]
-fn basic_cdf() -> KernelResult<(), Box<dyn std::error::Error>> {
+fn basic_cdf() -> delta_kernel::Result<()> {
     let batches = read_cdf_for_table("cdf-table", 0, None, None)?;
     let mut expected = vec![
         "+----+--------+------------+------------------+-----------------+",
@@ -181,7 +182,7 @@ fn basic_cdf() -> KernelResult<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-fn cdf_non_partitioned() -> KernelResult<(), Box<dyn std::error::Error>> {
+fn cdf_non_partitioned() -> delta_kernel::Result<()> {
     let batches = read_cdf_for_table("cdf-table-non-partitioned", 0, None, None)?;
     let mut expected = vec![
              "+----+--------+------------+-------------------+---------------+--------------+----------------+------------------+-----------------+",
@@ -220,7 +221,7 @@ fn cdf_non_partitioned() -> KernelResult<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-fn cdf_with_cdc_and_dvs() -> KernelResult<(), Box<dyn std::error::Error>> {
+fn cdf_with_cdc_and_dvs() -> delta_kernel::Result<()> {
     let batches = read_cdf_for_table("cdf-table-with-cdc-and-dvs", 0, None, None)?;
     let mut expected = vec![
         "+----+--------------------+------------------+-----------------+",
@@ -277,7 +278,7 @@ fn cdf_with_cdc_and_dvs() -> KernelResult<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-fn simple_cdf_version_ranges() -> KernelResult<(), Box<dyn std::error::Error>> {
+fn simple_cdf_version_ranges() -> delta_kernel::Result<()> {
     let batches = read_cdf_for_table("cdf-table-simple", 0, 0, None)?;
     let mut expected = vec![
         "+----+--------------+-----------------+",
@@ -371,7 +372,7 @@ fn simple_cdf_version_ranges() -> KernelResult<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-fn update_operations() -> KernelResult<(), Box<dyn std::error::Error>> {
+fn update_operations() -> delta_kernel::Result<()> {
     let batches = read_cdf_for_table("cdf-table-update-ops", 0, 2, None)?;
     // Note: `update_pre` and `update_post` are technically not part of the delta spec, and instead
     // should be `update_preimage` and `update_postimage` respectively. However, the tests in
@@ -408,7 +409,7 @@ fn update_operations() -> KernelResult<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-fn false_data_change_is_ignored() -> KernelResult<(), Box<dyn std::error::Error>> {
+fn false_data_change_is_ignored() -> delta_kernel::Result<()> {
     let batches = read_cdf_for_table("cdf-table-data-change", 0, 1, None)?;
     let mut expected = vec![
         "+----+--------------+-----------------+",
@@ -451,7 +452,7 @@ fn invalid_range_start_after_last_version_of_table() {
 }
 
 #[test]
-fn partition_table() -> KernelResult<(), Box<dyn std::error::Error>> {
+fn partition_table() -> delta_kernel::Result<()> {
     let batches = read_cdf_for_table("cdf-table-partitioned", 0, 2, None)?;
     let mut expected = vec![
         "+----+------+------+------------------+-----------------+",
@@ -477,7 +478,7 @@ fn partition_table() -> KernelResult<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-fn backtick_column_names() -> KernelResult<(), Box<dyn std::error::Error>> {
+fn backtick_column_names() -> delta_kernel::Result<()> {
     let batches = read_cdf_for_table("cdf-table-backtick-column-names", 0, None, None)?;
     let mut expected = vec![
         "+--------+----------+--------------------------+--------------+-----------------+",
@@ -496,7 +497,7 @@ fn backtick_column_names() -> KernelResult<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-fn unconditional_delete() -> KernelResult<(), Box<dyn std::error::Error>> {
+fn unconditional_delete() -> delta_kernel::Result<()> {
     let batches = read_cdf_for_table("cdf-table-delete-unconditional", 0, None, None)?;
     let mut expected = vec![
         "+----+--------------+-----------------+",
@@ -530,7 +531,7 @@ fn unconditional_delete() -> KernelResult<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-fn conditional_delete_all_rows() -> KernelResult<(), Box<dyn std::error::Error>> {
+fn conditional_delete_all_rows() -> delta_kernel::Result<()> {
     let batches = read_cdf_for_table("cdf-table-delete-conditional-all-rows", 0, None, None)?;
     let mut expected = vec![
         "+----+--------------+-----------------+",
@@ -564,7 +565,7 @@ fn conditional_delete_all_rows() -> KernelResult<(), Box<dyn std::error::Error>>
 }
 
 #[test]
-fn conditional_delete_two_rows() -> KernelResult<(), Box<dyn std::error::Error>> {
+fn conditional_delete_two_rows() -> delta_kernel::Result<()> {
     let batches = read_cdf_for_table("cdf-table-delete-conditional-two-rows", 0, None, None)?;
     let mut expected = vec![
         "+----+--------------+-----------------+",
@@ -590,7 +591,7 @@ fn conditional_delete_two_rows() -> KernelResult<(), Box<dyn std::error::Error>>
 }
 
 #[test]
-fn cdf_with_column_mapping_name_mode() -> KernelResult<(), Box<dyn std::error::Error>> {
+fn cdf_with_column_mapping_name_mode() -> delta_kernel::Result<()> {
     // NOTE: these tables only have CDF enabled in version 1+, so we start reading from 1. This is
     // due to pyspark limitation while writing: we were unable to create a table with column
     // mapping + CDF enabled in commit 0, so we created with column mapping and enabled CDF in
@@ -633,13 +634,13 @@ fn cdf_with_column_mapping_name_mode() -> KernelResult<(), Box<dyn std::error::E
 /// `table_changes` log-replay, so `execute()` never tries to read the phantom parquet
 /// file and returns zero rows.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn cdf_per_cell_null_on_malformed_stats() -> KernelResult<(), Box<dyn std::error::Error>> {
+async fn cdf_per_cell_null_on_malformed_stats() -> delta_kernel::Result<()> {
     let schema = schema_ref! {
         nullable "EventTime": TIMESTAMP,
         nullable "UserId": LONG,
     };
 
-    let tmp_dir = tempfile::tempdir()?;
+    let tmp_dir = tempfile::tempdir().map_err(KernelError::from)?;
     let tmp_url = Url::from_directory_path(tmp_dir.path()).unwrap();
     let (store, _engine, table_url) = engine_store_setup("cdf_per_cell_null", Some(&tmp_url));
 
@@ -689,7 +690,7 @@ async fn cdf_per_cell_null_on_malformed_stats() -> KernelResult<(), Box<dyn std:
 }
 
 #[test]
-fn cdf_with_column_mapping_id_mode() -> KernelResult<(), Box<dyn std::error::Error>> {
+fn cdf_with_column_mapping_id_mode() -> delta_kernel::Result<()> {
     // NOTE: these tables only have CDF enabled in version 1+, so we start reading from 1. This is
     // due to pyspark limitation while writing: we were unable to create a table with column
     // mapping + CDF enabled in commit 0, so we created with column mapping and enabled CDF in

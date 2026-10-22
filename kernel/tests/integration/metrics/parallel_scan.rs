@@ -7,7 +7,7 @@ use std::sync::Arc;
 use delta_kernel::arrow::array::Int32Array;
 use delta_kernel::metrics::TableType;
 use delta_kernel::scan::{AfterSequentialScanMetadata, ParallelScanMetadata};
-use delta_kernel::{Engine, KernelResult, Snapshot};
+use delta_kernel::{Engine, Snapshot};
 use rstest::rstest;
 use test_utils::{
     insert_data_with, install_thread_local_metrics_reporter, test_table_setup_mt, CapturingReporter,
@@ -21,7 +21,7 @@ use super::table_type::{assert_table_types, create_simple_table, make_committer}
 #[tokio::test(flavor = "multi_thread")]
 async fn test_parallel_scan_metadata_events_carry_table_type(
     #[case] catalog_managed: bool,
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+) -> delta_kernel::Result<()> {
     let (_tmp, table_path, engine) = test_table_setup_mt()?;
     let table_url = delta_kernel::try_parse_uri(&table_path)?;
     let build_snapshot = |version: u64| -> delta_kernel::Result<Arc<Snapshot>> {

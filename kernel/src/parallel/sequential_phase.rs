@@ -217,7 +217,7 @@ mod tests {
         stats: StatsOptions,
         expected_adds: &[&str],
         expected_sidecars: &[&str],
-    ) -> KernelResult<(), Box<dyn std::error::Error>> {
+    ) -> delta_kernel::Result<()> {
         let (engine, snapshot, _tempdir) = load_test_table(table_name)?;
 
         let scan = snapshot.scan_builder().with_stats(stats).build()?;
@@ -278,7 +278,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sequential_v2_with_commits_only() -> KernelResult<(), Box<dyn std::error::Error>> {
+    fn test_sequential_v2_with_commits_only() -> delta_kernel::Result<()> {
         verify_sequential_processing(
             "table-without-dv-small",
             StatsOptions::default(),
@@ -288,7 +288,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sequential_v2_with_sidecars() -> KernelResult<(), Box<dyn std::error::Error>> {
+    fn test_sequential_v2_with_sidecars() -> delta_kernel::Result<()> {
         verify_sequential_processing(
             "v2-checkpoints-json-with-sidecars",
             StatsOptions::default(),
@@ -301,8 +301,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sequential_finish_before_exhaustion_error(
-    ) -> KernelResult<(), Box<dyn std::error::Error>> {
+    fn test_sequential_finish_before_exhaustion_error() -> delta_kernel::Result<()> {
         let (engine, snapshot, _tempdir) = load_test_table("table-without-dv-small")?;
 
         let scan = snapshot.scan_builder().build()?;
@@ -316,8 +315,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sequential_checkpoint_without_sidecars() -> KernelResult<(), Box<dyn std::error::Error>>
-    {
+    fn test_sequential_checkpoint_without_sidecars() -> delta_kernel::Result<()> {
         verify_sequential_processing(
             "v2-checkpoints-json-without-sidecars",
             StatsOptions::default(),
@@ -336,7 +334,7 @@ mod tests {
     #[case::without_stats(StatsOptions::none())]
     fn test_sequential_parquet_checkpoint_with_sidecars(
         #[case] stats: StatsOptions,
-    ) -> KernelResult<(), Box<dyn std::error::Error>> {
+    ) -> delta_kernel::Result<()> {
         verify_sequential_processing(
             "v2-checkpoints-parquet-with-sidecars",
             stats,
@@ -350,7 +348,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sequential_checkpoint_no_commits() -> KernelResult<(), Box<dyn std::error::Error>> {
+    fn test_sequential_checkpoint_no_commits() -> delta_kernel::Result<()> {
         verify_sequential_processing(
             "with_checkpoint_no_last_checkpoint",
             StatsOptions::default(),

@@ -39,7 +39,7 @@ use url::Url;
 // ============================================================================
 
 #[tokio::test]
-async fn test_get_file_stats_from_crc() -> KernelResult<(), Box<dyn std::error::Error>> {
+async fn test_get_file_stats_from_crc() -> delta_kernel::Result<()> {
     let path = std::fs::canonicalize(PathBuf::from("./tests/data/crc-full/")).unwrap();
     let table_root = url::Url::from_directory_path(path).unwrap();
 
@@ -58,7 +58,7 @@ async fn test_get_file_stats_from_crc() -> KernelResult<(), Box<dyn std::error::
 }
 
 #[tokio::test]
-async fn test_get_file_stats_no_crc() -> KernelResult<(), Box<dyn std::error::Error>> {
+async fn test_get_file_stats_no_crc() -> delta_kernel::Result<()> {
     let (_temp_dir, table_path, engine) = test_table_setup()?;
 
     let schema = schema_ref! {
@@ -82,7 +82,7 @@ async fn test_get_file_stats_no_crc() -> KernelResult<(), Box<dyn std::error::Er
 
 #[tokio::test]
 async fn test_get_file_stats_stale_crc_advances_via_safe_commit_serves_stats(
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+) -> delta_kernel::Result<()> {
     // ===== GIVEN =====
     let (_temp_dir, table_path, engine) = test_table_setup()?;
 
@@ -128,7 +128,7 @@ async fn test_get_file_stats_stale_crc_advances_via_safe_commit_serves_stats(
 // ============================================================================
 
 #[tokio::test]
-async fn test_get_all_files_from_crc() -> KernelResult<(), Box<dyn std::error::Error>> {
+async fn test_get_all_files_from_crc() -> delta_kernel::Result<()> {
     let path = std::fs::canonicalize(PathBuf::from("./tests/data/crc-full/")).unwrap();
     let table_root = url::Url::from_directory_path(path).unwrap();
 
@@ -148,7 +148,7 @@ async fn test_get_all_files_from_crc() -> KernelResult<(), Box<dyn std::error::E
 }
 
 #[tokio::test]
-async fn test_get_all_files_no_crc() -> KernelResult<(), Box<dyn std::error::Error>> {
+async fn test_get_all_files_no_crc() -> delta_kernel::Result<()> {
     let (_temp_dir, table_path, engine) = test_table_setup()?;
 
     let schema = schema_ref! {
@@ -171,8 +171,7 @@ async fn test_get_all_files_no_crc() -> KernelResult<(), Box<dyn std::error::Err
 }
 
 #[tokio::test]
-async fn test_get_all_files_none_when_crc_advanced_via_safe_commit(
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+async fn test_get_all_files_none_when_crc_advanced_via_safe_commit() -> delta_kernel::Result<()> {
     // ===== GIVEN =====
     let (_temp_dir, table_path, engine) = test_table_setup()?;
 
@@ -216,8 +215,7 @@ async fn test_get_all_files_none_when_crc_advanced_via_safe_commit(
 
 #[cfg(feature = "internal-api")]
 #[test]
-fn test_get_all_files_preserved_via_snapshot_hint() -> KernelResult<(), Box<dyn std::error::Error>>
-{
+fn test_get_all_files_preserved_via_snapshot_hint() -> delta_kernel::Result<()> {
     let path = std::fs::canonicalize(PathBuf::from("./tests/data/crc-full/")).unwrap();
     let table_root = url::Url::from_directory_path(path).unwrap();
 
@@ -283,7 +281,7 @@ async fn test_incremental_update_advances_crc_with_real_file_stats(
     #[case] checkpoint_version: Option<Version>,
     #[case] crc_version: Option<Version>,
     #[case] expected_num_files: Option<i64>,
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+) -> delta_kernel::Result<()> {
     let (_temp_dir, table_path, engine) = test_table_setup_mt()?;
 
     // ===== GIVEN: v0 (0 files, crc on disk), then five WRITE inserts (one file each) to v5 =====
@@ -350,8 +348,7 @@ async fn test_incremental_update_advances_crc_with_real_file_stats(
 // An unreadable CRC at the snapshot version must not break loading: the snapshot falls back
 // to log replay for P&M and exposes no CRC.
 #[tokio::test]
-async fn test_snapshot_loads_when_crc_at_version_is_corrupt(
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+async fn test_snapshot_loads_when_crc_at_version_is_corrupt() -> delta_kernel::Result<()> {
     let (_temp_dir, table_path, engine) = test_table_setup()?;
 
     let schema = schema_ref! { nullable "id": INTEGER };
@@ -377,8 +374,7 @@ async fn test_snapshot_loads_when_crc_at_version_is_corrupt(
 // ============================================================================
 
 #[tokio::test]
-async fn test_crc_returns_resolved_crc_at_snapshot_version(
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+async fn test_crc_returns_resolved_crc_at_snapshot_version() -> delta_kernel::Result<()> {
     // ===== GIVEN =====
     let path = std::fs::canonicalize(PathBuf::from("./tests/data/crc-full/")).unwrap();
     let table_root = url::Url::from_directory_path(path).unwrap();
@@ -412,7 +408,7 @@ async fn test_crc_returns_resolved_crc_at_snapshot_version(
 }
 
 #[tokio::test]
-async fn test_crc_returns_none_when_no_crc() -> KernelResult<(), Box<dyn std::error::Error>> {
+async fn test_crc_returns_none_when_no_crc() -> delta_kernel::Result<()> {
     let (_temp_dir, table_path, engine) = test_table_setup()?;
 
     let schema = schema_ref! { nullable "id": INTEGER };
@@ -475,7 +471,7 @@ async fn test_create_table_produces_post_commit_crc() -> KernelResult<()> {
 #[tokio::test]
 async fn test_post_commit_crc_chains_only_if_read_snapshot_has_crc(
     #[case] use_post_commit_snapshot: bool,
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+) -> delta_kernel::Result<()> {
     let (_temp_dir, table_path, engine) = test_table_setup()?;
     let create_committed = create_table_and_commit(&table_path, engine.as_ref())?;
 
@@ -693,7 +689,7 @@ async fn test_post_commit_crc_non_incremental_op_makes_file_stats_indeterminate(
 // ============================================================================
 
 #[tokio::test]
-async fn test_write_checksum_success_simple() -> KernelResult<(), Box<dyn std::error::Error>> {
+async fn test_write_checksum_success_simple() -> delta_kernel::Result<()> {
     let (_temp_dir, table_path, engine) = test_table_setup()?;
     let committed = create_table_and_commit(&table_path, engine.as_ref())?;
     let snapshot = committed.post_commit_snapshot().unwrap();
@@ -714,7 +710,7 @@ async fn test_write_checksum_success_simple() -> KernelResult<(), Box<dyn std::e
 #[tokio::test]
 async fn test_write_checksum_double_write_returns_already_exists(
     #[case] reload_snapshot: bool,
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+) -> delta_kernel::Result<()> {
     let (_temp_dir, table_path, engine) = test_table_setup()?;
     let committed = create_table_and_commit(&table_path, engine.as_ref())?;
     let snapshot = committed.post_commit_snapshot().unwrap();
@@ -764,7 +760,7 @@ async fn test_write_checksum_resolves_correct_crc_from_each_root(
     )]
     root: WriteRoot,
     #[values(false, true)] ict_enabled: bool,
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+) -> delta_kernel::Result<()> {
     let (_temp_dir, table_path, engine) = test_table_setup_mt()?;
 
     // === Create the table with domain metadata (and optionally ICT) enabled ===
@@ -796,7 +792,8 @@ async fn test_write_checksum_resolves_correct_crc_from_each_root(
     // Each commit v adds one file, sets domain "d{v}"->"cfg{v}" and set-txn "app{v}"->v. At v=3 we
     // also remove "d1", so the final CRC must reflect the removal.
     for v in 1..=latest {
-        let arrow_schema = TryFromKernel::try_from_kernel(snap.schema().as_ref())?;
+        let arrow_schema = TryFromKernel::try_from_kernel(snap.schema().as_ref())
+            .map_err(delta_kernel::KernelError::from)?;
         let batch = RecordBatch::try_new(
             Arc::new(arrow_schema),
             vec![Arc::new(Int32Array::from(vec![v as i32]))],
@@ -899,8 +896,7 @@ async fn test_write_checksum_resolves_correct_crc_from_each_root(
 /// would pass even if retention regressed to a full discard, so this drives the retained base
 /// through the observable write path.
 #[tokio::test(flavor = "multi_thread")]
-async fn test_disabled_load_retains_stale_crc_as_base(
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+async fn test_disabled_load_retains_stale_crc_as_base() -> delta_kernel::Result<()> {
     let (_temp_dir, table_path, engine) = test_table_setup_mt()?;
     // crc-full has a CRC at version 0.
     let source_path = std::fs::canonicalize(PathBuf::from("./tests/data/crc-full/")).unwrap();
@@ -947,7 +943,7 @@ async fn test_disabled_load_retains_stale_crc_as_base(
 /// them; resolution must fall back to the checkpoint root instead of erroring on a missing commit.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_write_checksum_after_checkpoint_with_stale_base_resolves_from_checkpoint(
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+) -> delta_kernel::Result<()> {
     let (_temp_dir, table_path, engine) = test_table_setup_mt()?;
     let source_path = std::fs::canonicalize(PathBuf::from("./tests/data/crc-full/")).unwrap();
     copy_directory(&source_path, _temp_dir.path()).unwrap();
@@ -992,14 +988,15 @@ async fn test_write_checksum_after_checkpoint_with_stale_base_resolves_from_chec
 async fn setup_incremental_below_checkpoint_base<E: TaskExecutor>(
     engine: &Arc<DefaultEngine<E>>,
     table_path: &str,
-) -> KernelResult<SnapshotRef, Box<dyn std::error::Error>> {
+) -> delta_kernel::Result<SnapshotRef> {
     let schema = schema_ref! { nullable "id": INTEGER };
     let mut snap = create_table(table_path, schema, "test_engine", true)
         .build(engine.as_ref(), Box::new(FileSystemCommitter::new()))?
         .commit(engine.as_ref())?
         .unwrap_post_commit_snapshot();
     for v in 1..=3i32 {
-        let arrow_schema = TryFromKernel::try_from_kernel(snap.schema().as_ref())?;
+        let arrow_schema = TryFromKernel::try_from_kernel(snap.schema().as_ref())
+            .map_err(delta_kernel::KernelError::from)?;
         let batch = RecordBatch::try_new(
             Arc::new(arrow_schema),
             vec![Arc::new(Int32Array::from(vec![v]))],
@@ -1040,8 +1037,7 @@ async fn setup_incremental_below_checkpoint_base<E: TaskExecutor>(
 /// commit 2, erroring on the missing commit. The below-checkpoint base must be skipped, so the
 /// build falls back to log replay.
 #[tokio::test(flavor = "multi_thread")]
-async fn test_incremental_unlimited_skips_below_checkpoint_base(
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+async fn test_incremental_unlimited_skips_below_checkpoint_base() -> delta_kernel::Result<()> {
     let (_temp_dir, table_path, engine) = test_table_setup_mt()?;
     let base = setup_incremental_below_checkpoint_base(&engine, &table_path).await?;
 
@@ -1059,7 +1055,7 @@ async fn test_incremental_unlimited_skips_below_checkpoint_base(
 /// the checkpoint root rather than erroring on the commits the checkpoint subsumed.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_write_checksum_incremental_stale_base_below_new_checkpoint_resolves(
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+) -> delta_kernel::Result<()> {
     let (_temp_dir, table_path, engine) = test_table_setup_mt()?;
     let base = setup_incremental_below_checkpoint_base(&engine, &table_path).await?;
 
@@ -1088,7 +1084,7 @@ async fn test_write_checksum_incremental_stale_base_below_new_checkpoint_resolve
 /// ICT read error propagates instead of being laundered into a generic "CRC unresolved" error.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_write_checksum_from_checkpoint_ict_enabled_but_commit_unreadable_propagates_read_error(
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+) -> delta_kernel::Result<()> {
     let (_temp_dir, table_path, engine) = test_table_setup_mt()?;
 
     let schema = schema_ref! { nullable "id": INTEGER };
@@ -1130,7 +1126,7 @@ async fn test_write_checksum_from_checkpoint_ict_enabled_but_commit_unreadable_p
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_write_checksum_no_crc_with_non_incremental_tail_returns_unsupported(
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+) -> delta_kernel::Result<()> {
     let (_temp_dir, table_path, engine) = test_table_setup_mt()?;
 
     let schema = schema_ref! { nullable "id": INTEGER };
@@ -1207,8 +1203,7 @@ async fn test_in_memory_crc_chains_across_multiple_commits_then_writes() -> Kern
 // When an incremental snapshot update picks up a CRC file at the new version from the new log
 // segment, that CRC is resolved and stored on the resulting snapshot.
 #[tokio::test]
-async fn test_incremental_snapshot_preserves_loaded_crc(
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+async fn test_incremental_snapshot_preserves_loaded_crc() -> delta_kernel::Result<()> {
     let (_temp_dir, table_path, engine) = test_table_setup()?;
 
     // Create table at v0 and write its CRC to disk
@@ -1263,8 +1258,7 @@ async fn test_incremental_snapshot_preserves_loaded_crc(
 // The old segment's CRC file is preserved on the combined segment, but with the default
 // (disabled) replay budget the v0 CRC is not advanced to v1, so the snapshot carries no CRC.
 #[tokio::test]
-async fn test_incremental_snapshot_old_crc_no_new_crc(
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+async fn test_incremental_snapshot_old_crc_no_new_crc() -> delta_kernel::Result<()> {
     let (_temp_dir, table_path, engine) = test_table_setup()?;
 
     // Create table at v0 and write CRC to disk
@@ -1374,8 +1368,7 @@ impl Engine for FailingEngine {
 }
 
 #[tokio::test]
-async fn test_get_domain_metadata_with_crc_skips_log_replay(
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+async fn test_get_domain_metadata_with_crc_skips_log_replay() -> delta_kernel::Result<()> {
     let (_temp_dir, table_path, engine) = test_table_setup()?;
 
     // v0: CREATE TABLE with zip -> zap0 (and clustering DM from create_table_and_commit)
@@ -1472,8 +1465,7 @@ fn strip_field_from_crc(table_path: &str, version: Version, field: &str) {
 }
 
 #[tokio::test]
-async fn test_partial_dm_serves_hits_and_falls_through_for_misses(
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+async fn test_partial_dm_serves_hits_and_falls_through_for_misses() -> delta_kernel::Result<()> {
     let (_temp_dir, table_path, engine) = test_table_setup()?;
 
     // v0: CREATE TABLE with zip -> zap0 (post-commit writes CRC with full DM).
@@ -1556,8 +1548,7 @@ async fn test_partial_dm_serves_hits_and_falls_through_for_misses(
 /// correctly tracked in the CRC across commits, round-trip through write/reload, and that
 /// the CRC fast path (no log replay) works for set transaction queries.
 #[tokio::test]
-async fn test_set_transaction_crc_tracking_and_fast_path(
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+async fn test_set_transaction_crc_tracking_and_fast_path() -> delta_kernel::Result<()> {
     let (_temp_dir, table_path, engine) = test_table_setup()?;
 
     // -- v0: CREATE TABLE (no set transactions) --
@@ -1675,8 +1666,8 @@ async fn test_set_transaction_crc_tracking_and_fast_path(
 }
 
 #[tokio::test]
-async fn test_partial_set_txn_serves_hits_and_falls_through_for_misses(
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+async fn test_partial_set_txn_serves_hits_and_falls_through_for_misses() -> delta_kernel::Result<()>
+{
     let (_temp_dir, table_path, engine) = test_table_setup()?;
 
     // v0: CREATE TABLE. v1: commit with v1-app=1, then write CRC to disk.
@@ -1769,7 +1760,7 @@ async fn test_partial_set_txn_serves_hits_and_falls_through_for_misses(
 async fn test_set_txn_expiration_via_crc_fast_path(
     #[case] retention: Option<&str>,
     #[case] expected: Option<i64>,
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+) -> delta_kernel::Result<()> {
     let (_temp_dir, table_path, engine) = test_table_setup()?;
     let schema = schema_ref! { nullable "id": INTEGER };
 
@@ -1817,8 +1808,7 @@ async fn test_set_txn_expiration_via_crc_fast_path(
 /// transaction whose `lastUpdated` is older than retention must return `None` via the fast path,
 /// without falling through to log replay.
 #[tokio::test]
-async fn test_partial_set_txn_expired_hit_returns_none_via_fast_path(
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+async fn test_partial_set_txn_expired_hit_returns_none_via_fast_path() -> delta_kernel::Result<()> {
     let (_temp_dir, table_path, engine) = test_table_setup()?;
     let schema = schema_ref! { nullable "id": INTEGER };
 
@@ -1877,8 +1867,7 @@ async fn test_partial_set_txn_expired_hit_returns_none_via_fast_path(
 /// Verifies that a set transaction with null `last_updated` never expires, even with the most
 /// aggressive retention ("interval 0 seconds").
 #[tokio::test]
-async fn test_set_txn_null_last_updated_never_expires_via_log_replay(
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+async fn test_set_txn_null_last_updated_never_expires_via_log_replay() -> delta_kernel::Result<()> {
     let (_temp_dir, table_path, engine) = test_table_setup()?;
 
     // v0: create table with aggressive retention
@@ -1921,7 +1910,7 @@ async fn test_set_txn_null_last_updated_never_expires_via_log_replay(
 // lastUpdated (v1 far-future, v2 tiny) so the newest-by-log-order txn (v2) is the expired one.
 #[tokio::test]
 async fn test_set_txn_expired_newest_returns_none_not_older_via_log_replay(
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+) -> delta_kernel::Result<()> {
     let (_temp_dir, table_path, engine) = test_table_setup()?;
 
     let schema = schema_ref! { nullable "id": INTEGER };
@@ -2151,8 +2140,8 @@ async fn test_file_histogram_tracks_adds_and_removes_across_bins() -> KernelResu
 /// post-commit CRC is computed by applying the v2 delta to the deserialized v1 CRC, testing
 /// that the in-memory chain works with a disk-loaded base.
 #[tokio::test]
-async fn test_file_histogram_survives_disk_round_trip_then_delta_merge(
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+async fn test_file_histogram_survives_disk_round_trip_then_delta_merge() -> delta_kernel::Result<()>
+{
     let (_temp_dir, table_path, engine) = test_table_setup()?;
     let committed = create_table_and_commit(&table_path, engine.as_ref())?;
     let snapshot_v0 = committed.post_commit_snapshot().unwrap();
@@ -2236,7 +2225,7 @@ fn rewrite_crc_with_custom_bins(table_path: &str, version: u64, file_sizes: &[i6
 async fn test_file_histogram_with_bin_type_and_operation_type(
     #[values(true, false)] use_custom_bins: bool,
     #[values(true, false)] incremental: bool,
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+) -> delta_kernel::Result<()> {
     let (_temp_dir, table_path, engine) = test_table_setup()?;
 
     // ===== GIVEN: table with 1 file at v1 and CRC on disk =====
@@ -2382,7 +2371,7 @@ async fn test_stale_crc_fresh_build_advance_matrix(
     )]
     crc_staleness: CrcStaleness,
     #[values(false, true)] crc_missing_opt_fields: bool,
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+) -> delta_kernel::Result<()> {
     const CHECKPOINT_VERSION: i64 = 10;
     const LATEST_VERSION: i64 = 20;
     let crc_version = match crc_staleness {
@@ -2533,7 +2522,7 @@ async fn test_stale_crc_fresh_build_advance_matrix(
 
 #[tokio::test]
 async fn test_stale_crc_fresh_build_non_incremental_op_trips_indeterminate(
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+) -> delta_kernel::Result<()> {
     let (_temp_dir, table_path, engine) = test_table_setup()?;
 
     // ===== GIVEN: a CRC at v0 (made stale by an insert at v1) =====
@@ -2748,7 +2737,7 @@ enum Query {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_dm_query_rooted_in_stale_complete_crc(
     #[case] query: Query,
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+) -> delta_kernel::Result<()> {
     let (_temp_dir, table_path, engine) = test_table_setup_mt()?;
     setup_stale_crc_dm_table(&engine, &table_path).await?;
 
@@ -2789,8 +2778,7 @@ async fn test_dm_query_rooted_in_stale_complete_crc(
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_dm_query_stale_partial_crc_falls_through_to_full_scan(
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+async fn test_dm_query_stale_partial_crc_falls_through_to_full_scan() -> delta_kernel::Result<()> {
     let (_temp_dir, table_path, engine) = test_table_setup_mt()?;
     setup_stale_crc_dm_table(&engine, &table_path).await?;
 
@@ -2876,7 +2864,7 @@ async fn setup_stale_crc_txn_table<E: TaskExecutor>(
 async fn test_txn_query_rooted_in_stale_complete_crc(
     #[case] app_id: &str,
     #[case] expected: Option<i64>,
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+) -> delta_kernel::Result<()> {
     let (_temp_dir, table_path, engine) = test_table_setup_mt()?;
     setup_stale_crc_txn_table(&engine, &table_path).await?;
 
@@ -2895,8 +2883,7 @@ async fn test_txn_query_rooted_in_stale_complete_crc(
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_txn_query_stale_partial_crc_falls_through_to_full_scan(
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+async fn test_txn_query_stale_partial_crc_falls_through_to_full_scan() -> delta_kernel::Result<()> {
     let (_temp_dir, table_path, engine) = test_table_setup_mt()?;
     setup_stale_crc_txn_table(&engine, &table_path).await?;
 

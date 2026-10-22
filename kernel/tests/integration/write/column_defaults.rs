@@ -207,8 +207,7 @@ fn test_schema_with_column_defaults_overwrites_existing_default() {
 }
 
 #[tokio::test]
-async fn test_blind_append_to_column_defaults_table_is_supported(
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+async fn test_blind_append_to_column_defaults_table_is_supported() -> delta_kernel::Result<()> {
     let schema = schema_ref! {
         nullable "id": LONG,
         nullable "name": STRING,
@@ -251,7 +250,16 @@ async fn test_blind_append_to_column_defaults_table_is_supported(
         .is_committed());
 
     // Round-trip read.
-    let data = RecordBatch::try_new(Arc::new(schema.as_ref().try_into_arrow()?), columns)?;
+    let data = RecordBatch::try_new(
+        Arc::new(
+            schema
+                .as_ref()
+                .try_into_arrow()
+                .map_err(delta_kernel::KernelError::from)?,
+        ),
+        columns,
+    )
+    .map_err(delta_kernel::KernelError::from)?;
     test_read(&ArrowEngineData::new(data), &table_url, engine)?;
 
     Ok(())
@@ -265,7 +273,7 @@ async fn write_state_acknowledgement_depends_on_column_defaults(
     #[case] label: &str,
     #[case] partition_columns: &[&str],
     #[values(false, true)] has_default: bool,
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+) -> delta_kernel::Result<()> {
     let base = schema! {
         nullable "c": INTEGER,
         nullable "p": INTEGER,
@@ -332,7 +340,7 @@ async fn write_state_acknowledgement_depends_on_column_defaults(
 async fn assert_materialized_column_default_round_trips(
     data_type: DataType,
     default_sql: &str,
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+) -> delta_kernel::Result<()> {
     let extra_features: &[&str] = if data_type == DataType::TIMESTAMP_NTZ {
         &["timestampNtz"]
     } else {
@@ -389,9 +397,15 @@ async fn assert_materialized_column_default_round_trips(
         .unwrap_committed();
 
     let expected = RecordBatch::try_new(
-        Arc::new(loaded_schema.as_ref().try_into_arrow()?),
+        Arc::new(
+            loaded_schema
+                .as_ref()
+                .try_into_arrow()
+                .map_err(delta_kernel::KernelError::from)?,
+        ),
         vec![values],
-    )?;
+    )
+    .map_err(delta_kernel::KernelError::from)?;
     test_read(&ArrowEngineData::new(expected), &table_url, engine)?;
 
     Ok(())
@@ -415,7 +429,7 @@ async fn assert_materialized_column_default_round_trips(
 async fn test_materialized_primitive_column_default_round_trips(
     #[case] data_type: DataType,
     #[case] default_sql: &str,
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+) -> delta_kernel::Result<()> {
     assert_materialized_column_default_round_trips(data_type, default_sql).await
 }
 
@@ -425,7 +439,7 @@ async fn test_materialized_primitive_column_default_round_trips(
 #[tokio::test]
 async fn test_transaction_top_level_column_defaults_excludes_nested_defaults(
     #[case] partition_columns: &[&str],
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+) -> delta_kernel::Result<()> {
     let nested_default = StructField::nullable("inner", DataType::INTEGER).add_metadata([(
         ColumnMetadataKey::CurrentDefault.as_ref().to_string(),
         MetadataValue::String("7".to_string()),
@@ -505,7 +519,7 @@ async fn test_load_and_write_tolerate_v3_unverifiable_default(
     #[case] field_type: DataType,
     #[case] default_sql: &str,
     #[case] warning_text: &str,
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+) -> delta_kernel::Result<()> {
     let base = schema! { nullable "c": (field_type) };
     let schema = schema_with_column_defaults(&base, HashMap::from([("c", default_sql)]))?;
 
@@ -561,8 +575,7 @@ async fn test_load_rejects_non_string_column_default() -> KernelResult<()> {
 /// Orphaned column-default metadata (a `CURRENT_DEFAULT` without the `allowColumnDefaults`
 /// feature) is tolerated: the snapshot loads and a write context builds without error.
 #[tokio::test]
-async fn test_load_and_write_allow_orphan_default() -> KernelResult<(), Box<dyn std::error::Error>>
-{
+async fn test_load_and_write_allow_orphan_default() -> delta_kernel::Result<()> {
     let base = schema! { nullable "c": INTEGER };
     let schema = schema_with_column_defaults(&base, HashMap::from([("c", "42")]))?;
 
@@ -593,7 +606,7 @@ async fn test_variant_column_default_validation_at_snapshot_load(
     #[case] label: &str,
     #[case] default_sql: &str,
     #[case] expected_error: Option<&str>,
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+) -> delta_kernel::Result<()> {
     let variant_type = DataType::unshredded_variant();
     let base = schema! { nullable "v": (variant_type) };
     let schema = schema_with_column_defaults(&base, HashMap::from([("v", default_sql)]))?;
@@ -652,7 +665,7 @@ async fn test_load_tolerates_unmaterializable_default(
     #[case] label: &str,
     #[case] data_type: DataType,
     #[case] default_sql: &str,
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+) -> delta_kernel::Result<()> {
     let base = schema! { nullable "c": (data_type) };
     let schema = schema_with_column_defaults(&base, HashMap::from([("c", default_sql)]))?;
 
@@ -681,10 +694,10 @@ async fn test_load_tolerates_unmaterializable_default(
 }
 
 #[test]
-fn test_column_default_composes_with_deletion_vectors(
-) -> KernelResult<(), Box<dyn std::error::Error>> {
-    let source_path = fs::canonicalize("./tests/data/table-with-dv-small/")?;
-    let temp_dir = tempfile::tempdir()?;
+fn test_column_default_composes_with_deletion_vectors() -> delta_kernel::Result<()> {
+    let source_path = fs::canonicalize("./tests/data/table-with-dv-small/")
+        .map_err(delta_kernel::KernelError::from)?;
+    let temp_dir = tempfile::tempdir().map_err(delta_kernel::KernelError::from)?;
     let table_path = temp_dir.path().join("table-with-dv-and-column-default");
     copy_directory(&source_path, &table_path)?;
 
@@ -711,8 +724,7 @@ fn test_column_default_composes_with_deletion_vectors(
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_defaulted_clustering_column_round_trips_with_stats(
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+async fn test_defaulted_clustering_column_round_trips_with_stats() -> delta_kernel::Result<()> {
     let (_temp_dir, table_path, engine) = test_table_setup_mt()?;
     let base = schema! {
         nullable "id": LONG,
@@ -735,7 +747,16 @@ async fn test_defaulted_clustering_column_round_trips_with_stats(
         Arc::new(Int64Array::from(vec![1, 2, 3])),
         Arc::new(Int32Array::from(vec![42, 42, 42])),
     ];
-    let batch = RecordBatch::try_new(Arc::new(schema.as_ref().try_into_arrow()?), columns.clone())?;
+    let batch = RecordBatch::try_new(
+        Arc::new(
+            schema
+                .as_ref()
+                .try_into_arrow()
+                .map_err(delta_kernel::KernelError::from)?,
+        ),
+        columns.clone(),
+    )
+    .map_err(delta_kernel::KernelError::from)?;
     write_batch_to_table(&snapshot, engine.as_ref(), batch, HashMap::new()).await?;
 
     let add_actions = read_actions_from_commit(&table_url, 2, "add")?;
@@ -743,11 +764,21 @@ async fn test_defaulted_clustering_column_round_trips_with_stats(
         add_actions[0]["stats"]
             .as_str()
             .expect("clustered write must include stats"),
-    )?;
+    )
+    .map_err(delta_kernel::KernelError::from)?;
     assert_eq!(stats["minValues"]["c"], 42);
     assert_eq!(stats["maxValues"]["c"], 42);
 
-    let expected = RecordBatch::try_new(Arc::new(schema.as_ref().try_into_arrow()?), columns)?;
+    let expected = RecordBatch::try_new(
+        Arc::new(
+            schema
+                .as_ref()
+                .try_into_arrow()
+                .map_err(delta_kernel::KernelError::from)?,
+        ),
+        columns,
+    )
+    .map_err(delta_kernel::KernelError::from)?;
     test_read(&ArrowEngineData::new(expected), &table_url, engine)?;
 
     Ok(())
@@ -877,8 +908,7 @@ async fn test_column_default_round_trips_with_column_mapping_and_checkpoint(
 }
 
 #[tokio::test]
-async fn test_partition_column_default_round_trips_on_read(
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+async fn test_partition_column_default_round_trips_on_read() -> delta_kernel::Result<()> {
     let base = schema! {
         nullable "id": LONG,
         nullable "p": INTEGER,
@@ -902,9 +932,14 @@ async fn test_partition_column_default_round_trips_on_read(
 
     let data_schema = schema! { nullable "id": LONG };
     let data = RecordBatch::try_new(
-        Arc::new((&data_schema).try_into_arrow()?),
+        Arc::new(
+            (&data_schema)
+                .try_into_arrow()
+                .map_err(delta_kernel::KernelError::from)?,
+        ),
         vec![Arc::new(Int64Array::from(vec![1, 2, 3]))],
-    )?;
+    )
+    .map_err(delta_kernel::KernelError::from)?;
     write_batch_to_table(
         &snapshot,
         engine.as_ref(),
@@ -914,12 +949,18 @@ async fn test_partition_column_default_round_trips_on_read(
     .await?;
 
     let expected = RecordBatch::try_new(
-        Arc::new(schema.as_ref().try_into_arrow()?),
+        Arc::new(
+            schema
+                .as_ref()
+                .try_into_arrow()
+                .map_err(delta_kernel::KernelError::from)?,
+        ),
         vec![
             Arc::new(Int64Array::from(vec![1, 2, 3])),
             Arc::new(Int32Array::from(vec![42, 42, 42])),
         ],
-    )?;
+    )
+    .map_err(delta_kernel::KernelError::from)?;
     test_read(&ArrowEngineData::new(expected), &table_url, engine)?;
 
     Ok(())
@@ -929,8 +970,7 @@ async fn test_partition_column_default_round_trips_on_read(
 /// the column-mapping transform (so it is still discoverable by its logical name), and a write
 /// that materializes the default round-trips on read.
 #[tokio::test(flavor = "multi_thread")]
-async fn test_column_default_with_iceberg_compat_v3_e2e(
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+async fn test_column_default_with_iceberg_compat_v3_e2e() -> delta_kernel::Result<()> {
     let base = schema! {
         nullable "id": LONG,
         nullable "c": INTEGER,
@@ -989,7 +1029,16 @@ async fn test_column_default_with_iceberg_compat_v3_e2e(
         .await?
         .is_committed());
 
-    let data = RecordBatch::try_new(Arc::new(schema.as_ref().try_into_arrow()?), columns)?;
+    let data = RecordBatch::try_new(
+        Arc::new(
+            schema
+                .as_ref()
+                .try_into_arrow()
+                .map_err(delta_kernel::KernelError::from)?,
+        ),
+        columns,
+    )
+    .map_err(delta_kernel::KernelError::from)?;
     test_read(&ArrowEngineData::new(data), &table_url, engine)?;
 
     Ok(())

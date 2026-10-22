@@ -87,8 +87,7 @@ async fn test_post_commit_snapshot_create_then_insert() -> KernelResult<()> {
 }
 
 #[tokio::test]
-async fn test_write_parquet_succeed_with_logical_partition_names(
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+async fn test_write_parquet_succeed_with_logical_partition_names() -> delta_kernel::Result<()> {
     let schema = schema_ref! {
         nullable "id": INTEGER,
         nullable "letter": STRING,
@@ -107,9 +106,15 @@ async fn test_write_parquet_succeed_with_logical_partition_names(
         // Create data with only the non-partition column
         let data_schema = schema_ref! { nullable "id": INTEGER };
         let batch = RecordBatch::try_new(
-            Arc::new(data_schema.as_ref().try_into_arrow()?),
+            Arc::new(
+                data_schema
+                    .as_ref()
+                    .try_into_arrow()
+                    .map_err(delta_kernel::KernelError::from)?,
+            ),
             vec![Arc::new(Int32Array::from(vec![1, 2]))],
-        )?;
+        )
+        .map_err(delta_kernel::KernelError::from)?;
 
         // Pass partition values with logical name -- should succeed
         let result = write_batch_to_table(
@@ -129,7 +134,7 @@ async fn test_write_parquet_succeed_with_logical_partition_names(
 
 #[tokio::test]
 async fn test_write_context_builder_rejects_partition_values_on_unpartitioned_table(
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+) -> delta_kernel::Result<()> {
     let schema = get_simple_int_schema();
 
     for (table_url, engine, _store, _table_name) in

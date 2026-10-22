@@ -24,7 +24,7 @@ use super::simple_schema;
 #[tokio::test(flavor = "multi_thread")]
 async fn test_metric_events_carry_table_type(
     #[case] catalog_managed: bool,
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+) -> delta_kernel::Result<()> {
     let (_tmp, table_path, engine) = test_table_setup_mt()?;
     let table_url = delta_kernel::try_parse_uri(&table_path)?;
 

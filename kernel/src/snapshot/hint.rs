@@ -702,7 +702,7 @@ mod tests {
         #[case] expected_published_version: Option<Version>,
         #[values(false, true)] foreign_table: bool,
         #[values(false, true)] reverse_paths: bool,
-    ) -> KernelResult<(), Box<dyn std::error::Error>> {
+    ) -> delta_kernel::Result<()> {
         const TABLE_ROOT: &str = "memory:///target/";
         const LOG_ROOT: &str = "memory:///target/_delta_log/";
 

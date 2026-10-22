@@ -278,7 +278,7 @@ fn verify_non_file_batches(batches: &[Box<dyn EngineData>], expected: &ExpectedN
 /// Verifies: exactly 1 sidecar file, non-file batches buffered, iterator exhausted,
 /// action counts correct.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_generate_sidecars_single_sidecar() -> KernelResult<(), Box<dyn std::error::Error>> {
+async fn test_generate_sidecars_single_sidecar() -> delta_kernel::Result<()> {
     let (store, _) = new_in_memory_store();
     let engine = new_sync_engine(store.clone());
 
@@ -305,7 +305,7 @@ async fn test_generate_sidecars_single_sidecar() -> KernelResult<(), Box<dyn std
 
     write_commit_to_store(&store, vec![create_remove_action("file1.parquet")], 2).await?;
 
-    let table_root = Url::parse("memory:///")?;
+    let table_root = Url::parse("memory:///").map_err(delta_kernel::KernelError::from)?;
     let snapshot = Snapshot::builder_for(table_root).build(&engine)?;
     let writer = snapshot.create_checkpoint_writer(&engine)?;
 
@@ -341,7 +341,7 @@ async fn test_generate_sidecars_single_sidecar() -> KernelResult<(), Box<dyn std
 /// batches with both file and non-file actions correctly split, and the row count of the
 /// file and non-file batches is correct.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_generate_sidecars_multiple_chunks() -> KernelResult<(), Box<dyn std::error::Error>> {
+async fn test_generate_sidecars_multiple_chunks() -> delta_kernel::Result<()> {
     let (store, _) = new_in_memory_store();
     let engine = new_sync_engine(store.clone());
 
@@ -383,7 +383,7 @@ async fn test_generate_sidecars_multiple_chunks() -> KernelResult<(), Box<dyn st
     .await?;
     write_commit_to_store(&store, vec![create_add_action("file5.parquet")], 3).await?;
 
-    let table_root = Url::parse("memory:///")?;
+    let table_root = Url::parse("memory:///").map_err(delta_kernel::KernelError::from)?;
     let snapshot = Snapshot::builder_for(table_root).build(&engine)?;
     let writer = snapshot.create_checkpoint_writer(&engine)?;
 
@@ -451,8 +451,7 @@ async fn test_generate_sidecars_multiple_chunks() -> KernelResult<(), Box<dyn st
 /// V2 table with adds across multiple commits, hint=1 (very small).
 /// Verifies: produces multiple sidecar files, splitter is exhausted.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_generate_sidecars_hint_one_per_batch() -> KernelResult<(), Box<dyn std::error::Error>>
-{
+async fn test_generate_sidecars_hint_one_per_batch() -> delta_kernel::Result<()> {
     let (store, _) = new_in_memory_store();
     let engine = new_sync_engine(store.clone());
 
@@ -486,7 +485,7 @@ async fn test_generate_sidecars_hint_one_per_batch() -> KernelResult<(), Box<dyn
     )
     .await?;
 
-    let table_root = Url::parse("memory:///")?;
+    let table_root = Url::parse("memory:///").map_err(delta_kernel::KernelError::from)?;
     let snapshot = Snapshot::builder_for(table_root).build(&engine)?;
     let writer = snapshot.create_checkpoint_writer(&engine)?;
 
@@ -522,8 +521,7 @@ async fn test_generate_sidecars_hint_one_per_batch() -> KernelResult<(), Box<dyn
 /// 4. Validate the output schema includes `stats_parsed` and `partitionValues_parsed`.
 /// 5. Validate the actual values in `stats_parsed` and `partitionValues_parsed` match the input.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_generate_sidecars_stats_and_partition_values(
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+async fn test_generate_sidecars_stats_and_partition_values() -> delta_kernel::Result<()> {
     let (store, _) = new_in_memory_store();
     let engine = new_sync_engine(store.clone());
 
@@ -555,7 +553,7 @@ async fn test_generate_sidecars_stats_and_partition_values(
         .insert("category".into(), "books".into());
     write_commit_to_store(&store, vec![Action::Add(add)], 1).await?;
 
-    let table_root = Url::parse("memory:///")?;
+    let table_root = Url::parse("memory:///").map_err(delta_kernel::KernelError::from)?;
     let snapshot = Snapshot::builder_for(table_root).build(&engine)?;
     let writer = snapshot.create_checkpoint_writer(&engine)?;
 
@@ -635,7 +633,7 @@ async fn test_generate_sidecars_stats_and_partition_values(
 /// V2 table with only protocol + metadata (no adds/removes).
 /// Verifies: SidecarSplitter yields no file-action rows and buffers all non-file actions.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_splitter_no_file_actions() -> KernelResult<(), Box<dyn std::error::Error>> {
+async fn test_splitter_no_file_actions() -> delta_kernel::Result<()> {
     let (store, _) = new_in_memory_store();
     let engine = new_sync_engine(store.clone());
 
@@ -649,7 +647,7 @@ async fn test_splitter_no_file_actions() -> KernelResult<(), Box<dyn std::error:
     )
     .await?;
 
-    let table_root = Url::parse("memory:///")?;
+    let table_root = Url::parse("memory:///").map_err(delta_kernel::KernelError::from)?;
     let snapshot = Snapshot::builder_for(table_root).build(&engine)?;
     let writer = snapshot.create_checkpoint_writer(&engine)?;
 

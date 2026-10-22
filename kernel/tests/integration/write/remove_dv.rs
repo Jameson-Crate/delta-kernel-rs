@@ -93,7 +93,7 @@ async fn append_only_enforces_data_change_for_file_actions(
     #[case] data_change: bool,
     #[case] selection_vector: &[bool],
     #[case] expected_error: Option<&str>,
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+) -> delta_kernel::Result<()> {
     let (_temp_dir, table_path, engine) = test_table_setup()?;
     let table_url = Url::from_directory_path(&table_path).unwrap();
     let schema = schema_ref! { nullable "number": INTEGER };
@@ -119,13 +119,17 @@ async fn append_only_enforces_data_change_for_file_actions(
         write_context
             .physical_data_schema()
             .as_ref()
-            .try_into_arrow()?,
+            .try_into_arrow()
+            .map_err(KernelError::from)?,
     );
     for value in [1, 2, 3] {
-        let data = ArrowEngineData::new(RecordBatch::try_new(
-            arrow_schema.clone(),
-            vec![Arc::new(Int32Array::from(vec![value]))],
-        )?);
+        let data = ArrowEngineData::new(
+            RecordBatch::try_new(
+                arrow_schema.clone(),
+                vec![Arc::new(Int32Array::from(vec![value]))],
+            )
+            .map_err(KernelError::from)?,
+        );
         txn.add_files(engine.write_parquet(&data, &write_context).await?);
     }
     let snapshot = txn.commit(engine.as_ref())?.unwrap_post_commit_snapshot();
@@ -348,7 +352,7 @@ async fn commit_validates_staged_remove_fields(
     #[case] modification: StagedRemoveFileModification,
     #[case] selection_vector: &[bool],
     #[case] expected_error: Option<&str>,
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+) -> delta_kernel::Result<()> {
     // === Create table ===
     let schema = get_simple_int_schema();
     let (table_url, engine, _store, _table_name) =
@@ -386,9 +390,9 @@ async fn commit_validates_staged_remove_fields(
         .first()
         .expect("at least one scan metadata batch")
         .schema();
-    let batch = concat_batches(&schema, &batches)?;
+    let batch = concat_batches(&schema, &batches).map_err(KernelError::from)?;
     assert_eq!(batch.num_rows(), 3);
-    let path_index = batch.schema().index_of("path")?;
+    let path_index = batch.schema().index_of("path").map_err(KernelError::from)?;
     let paths = batch
         .column(path_index)
         .as_any()
@@ -401,7 +405,7 @@ async fn commit_validates_staged_remove_fields(
         .map(|(_, path)| path.expect("path is present").to_owned())
         .collect::<Vec<_>>();
     expected_surviving_paths.sort();
-    let corrupted = modify_staged_remove_file(&batch, modification)?;
+    let corrupted = modify_staged_remove_file(&batch, modification).map_err(KernelError::from)?;
 
     // === Commit and assert ===
     let mut txn = begin_transaction(snapshot, engine.as_ref())?;
@@ -418,7 +422,7 @@ async fn commit_validates_staged_remove_fields(
         for scan_files in get_scan_files(snapshot, engine.as_ref())? {
             let (data, selection_vector) = scan_files.into_parts();
             let batch = into_record_batch(data);
-            let path_index = batch.schema().index_of("path")?;
+            let path_index = batch.schema().index_of("path").map_err(KernelError::from)?;
             let paths = batch
                 .column(path_index)
                 .as_any()
@@ -437,7 +441,7 @@ async fn commit_validates_staged_remove_fields(
 }
 
 #[tokio::test]
-async fn test_remove_files_adds_expected_entries() -> KernelResult<(), Box<dyn std::error::Error>> {
+async fn test_remove_files_adds_expected_entries() -> delta_kernel::Result<()> {
     // This test verifies that Remove actions generated from scan metadata contain all expected
     // fields from the Remove struct (defined in kernel/src/actions/mod.rs).
     //
@@ -472,11 +476,12 @@ async fn test_remove_files_adds_expected_entries() -> KernelResult<(), Box<dyn s
 
             // Read the commit log directly to verify remove actions
             let commit_path = tmp_table_path.join(format!("_delta_log/{commit_version:020}.json"));
-            let commit_content = std::fs::read_to_string(commit_path)?;
+            let commit_content = std::fs::read_to_string(commit_path).map_err(KernelError::from)?;
 
             let parsed_commits: Vec<_> = Deserializer::from_str(&commit_content)
                 .into_iter::<serde_json::Value>()
-                .try_collect()?;
+                .try_collect()
+                .map_err(KernelError::from)?;
 
             // Verify we have at least commitInfo and remove actions
             assert!(
@@ -544,7 +549,8 @@ async fn test_remove_files_adds_expected_entries() -> KernelResult<(), Box<dyn s
 
             // stats (optional)
             let stats = remove["stats"].as_str().expect("Missing stats");
-            let stats_json: serde_json::Value = serde_json::from_str(stats)?;
+            let stats_json: serde_json::Value =
+                serde_json::from_str(stats).map_err(KernelError::from)?;
             assert_eq!(stats_json[NUM_RECORDS], 10);
 
             // tags (optional)
@@ -601,7 +607,7 @@ async fn test_remove_files_adds_expected_entries() -> KernelResult<(), Box<dyn s
 #[cfg(feature = "adaptive-metadata-in-dev")]
 #[tokio::test]
 async fn remove_on_adaptive_metadata_table_nulls_deletion_timestamp_and_forces_extended_metadata(
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+) -> delta_kernel::Result<()> {
     // v1: create a `number: INTEGER` adaptiveMetadata table and append a data file.
     let (_tmp_dir, table_url, engine, snapshot) =
         create_number_table(vec!["adaptiveMetadata-preview"], vec![], "id", true).await?;
@@ -662,7 +668,7 @@ async fn remove_on_adaptive_metadata_table_nulls_deletion_timestamp_and_forces_e
 async fn test_remove_scanned_file_sets_extended_metadata(
     #[case] missing_fields: &[ExtendedMetadataField],
     #[case] expected_extended_file_metadata: bool,
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+) -> delta_kernel::Result<()> {
     let (_temp_dir, table_url, engine, snapshot) =
         create_number_table(vec![], vec![], "none", true).await?;
 
@@ -716,8 +722,7 @@ async fn test_remove_scanned_file_sets_extended_metadata(
 }
 
 #[tokio::test]
-async fn test_update_deletion_vectors_adds_expected_entries(
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+async fn test_update_deletion_vectors_adds_expected_entries() -> delta_kernel::Result<()> {
     // This test verifies that deletion vector updates write proper Remove and Add actions
     // to the transaction log.
     //
@@ -790,10 +795,12 @@ async fn test_update_deletion_vectors_adds_expected_entries(
 
             // Read the original version 1 log to get original file metadata
             let original_log_path = tmp_table_path.join("_delta_log/00000000000000000001.json");
-            let original_log_content = std::fs::read_to_string(original_log_path)?;
+            let original_log_content =
+                std::fs::read_to_string(original_log_path).map_err(KernelError::from)?;
             let original_commits: Vec<_> = Deserializer::from_str(&original_log_content)
                 .into_iter::<serde_json::Value>()
-                .try_collect()?;
+                .try_collect()
+                .map_err(KernelError::from)?;
 
             let file_path = "part-00000-fae5310a-a37d-4e51-827b-c3d5516560ca-c000.snappy.parquet";
 
@@ -821,11 +828,12 @@ async fn test_update_deletion_vectors_adds_expected_entries(
 
             // Read the commit log directly
             let commit_path = tmp_table_path.join(format!("_delta_log/{commit_version:020}.json"));
-            let commit_content = std::fs::read_to_string(commit_path)?;
+            let commit_content = std::fs::read_to_string(commit_path).map_err(KernelError::from)?;
 
             let parsed_commits: Vec<_> = Deserializer::from_str(&commit_content)
                 .into_iter::<serde_json::Value>()
-                .try_collect()?;
+                .try_collect()
+                .map_err(KernelError::from)?;
 
             // Should have commitInfo, remove, and add actions
             assert!(
@@ -1105,7 +1113,7 @@ async fn test_update_deletion_vectors_rejects_corrupted_scan_files(
     #[case] modification: ScanFileModification,
     #[case] expected_error: &str,
     #[values(0, 1, 2)] invalid_batch_index: usize,
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+) -> delta_kernel::Result<()> {
     const BATCH_COUNT: usize = 3;
 
     let schema = schema_ref! {
@@ -1275,7 +1283,7 @@ fn string_map_array(values: &[(&str, Option<&str>)]) -> ArrayRef {
 #[tokio::test]
 async fn test_update_deletion_vectors_multiple_files(
     #[case] partition_values: &[(&str, Option<&str>)],
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+) -> delta_kernel::Result<()> {
     // This test verifies that update_deletion_vectors can update multiple files
     // in a single call, creating proper Remove and Add actions for each file.
     let _ = tracing_subscriber::fmt::try_init();
@@ -1312,17 +1320,21 @@ async fn test_update_deletion_vectors_multiple_files(
             let commit_version = committed.commit_version();
 
             // Read the commit log directly from object store
-            let final_commit_path =
-                table_url.join(&format!("_delta_log/{commit_version:020}.json"))?;
+            let final_commit_path = table_url
+                .join(&format!("_delta_log/{commit_version:020}.json"))
+                .map_err(KernelError::from)?;
             let commit_content = store
-                .get(&Path::from_url_path(final_commit_path.path())?)
-                .await?
+                .get(&Path::from_url_path(final_commit_path.path()).map_err(KernelError::from)?)
+                .await
+                .map_err(KernelError::from)?
                 .bytes()
-                .await?;
+                .await
+                .map_err(KernelError::from)?;
 
             let parsed_commits: Vec<_> = Deserializer::from_slice(&commit_content)
                 .into_iter::<serde_json::Value>()
-                .try_collect()?;
+                .try_collect()
+                .map_err(KernelError::from)?;
 
             // Extract all remove and add actions
             let remove_actions: Vec<_> = parsed_commits
@@ -1411,7 +1423,7 @@ async fn test_update_deletion_vectors_respects_selection_vector(
     #[case] selection_vector: &[bool],
     #[case] target_indexes: &[usize],
     #[case] expect_mismatch: bool,
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+) -> delta_kernel::Result<()> {
     let schema = schema_ref! {
         nullable "id": INTEGER,
         nullable "value": STRING,
@@ -1477,7 +1489,7 @@ async fn test_update_deletion_vectors_respects_selection_vector(
         .into_iter()
         .map(|scan_files| scan_files.apply_selection_vector().map(into_record_batch))
         .collect::<KernelResult<Vec<_>>>()?;
-    let batch = concat_batches(&batches[0].schema(), &batches)?;
+    let batch = concat_batches(&batches[0].schema(), &batches).map_err(KernelError::from)?;
     let scan_files = FilteredEngineData::try_new(
         Box::new(ArrowEngineData::new(batch)),
         selection_vector.to_vec(),
@@ -1496,15 +1508,20 @@ async fn test_update_deletion_vectors_respects_selection_vector(
     let version = committed.commit_version();
 
     // Read the commit directly from the (in-memory) store.
-    let commit_path = table_url.join(&format!("_delta_log/{version:020}.json"))?;
+    let commit_path = table_url
+        .join(&format!("_delta_log/{version:020}.json"))
+        .map_err(KernelError::from)?;
     let commit_content = store
-        .get(&Path::from_url_path(commit_path.path())?)
-        .await?
+        .get(&Path::from_url_path(commit_path.path()).map_err(KernelError::from)?)
+        .await
+        .map_err(KernelError::from)?
         .bytes()
-        .await?;
+        .await
+        .map_err(KernelError::from)?;
     let actions: Vec<serde_json::Value> = Deserializer::from_slice(&commit_content)
         .into_iter()
-        .try_collect()?;
+        .try_collect()
+        .map_err(KernelError::from)?;
     let adds: Vec<&serde_json::Value> = actions.iter().filter_map(|a| a.get("add")).collect();
     let removes: Vec<&serde_json::Value> = actions.iter().filter_map(|a| a.get("remove")).collect();
 
@@ -1562,7 +1579,8 @@ async fn test_update_deletion_vectors_respects_selection_vector(
             add["deletionVector"].is_object(),
             "new add must carry a deletion vector"
         );
-        let stats: serde_json::Value = serde_json::from_str(add["stats"].as_str().unwrap())?;
+        let stats: serde_json::Value =
+            serde_json::from_str(add["stats"].as_str().unwrap()).map_err(KernelError::from)?;
         assert_eq!(
             stats[TIGHT_BOUNDS].as_bool(),
             Some(false),
@@ -1579,8 +1597,7 @@ async fn test_update_deletion_vectors_respects_selection_vector(
 }
 
 #[tokio::test]
-async fn test_remove_files_verify_files_excluded_from_scan(
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+async fn test_remove_files_verify_files_excluded_from_scan() -> delta_kernel::Result<()> {
     // Adds and then removes files and then verifies they don't appear in the scan.
 
     // setup tracing
@@ -1708,8 +1725,7 @@ fn with_missing_extended_metadata_fields(
 }
 
 #[tokio::test]
-async fn test_remove_files_with_modified_selection_vector(
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+async fn test_remove_files_with_modified_selection_vector() -> delta_kernel::Result<()> {
     // This test verifies that we can selectively remove files by:
     // 1. Calling remove_files multiple times with different subsets
     // 2. Modifying the selection vector to choose which files to remove
@@ -1875,13 +1891,13 @@ async fn test_remove_files_with_modified_selection_vector(
 async fn test_remove_files_after_predicate_scan_includes_stats_parsed(
     #[case] use_struct_stats_checkpoint: bool,
     #[case] use_predicate: bool,
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+) -> delta_kernel::Result<()> {
     let _ = tracing_subscriber::fmt::try_init();
 
     let schema = get_simple_int_schema();
 
     // Use a local directory so we can inspect the commit log for stats content.
-    let tmp_dir = tempdir()?;
+    let tmp_dir = tempdir().map_err(KernelError::from)?;
     let tmp_url = Url::from_directory_path(tmp_dir.path()).unwrap();
 
     for (table_url, engine, _store, _table_name) in
@@ -1967,7 +1983,8 @@ async fn test_remove_files_after_predicate_scan_includes_stats_parsed(
             let stats_str = remove["stats"]
                 .as_str()
                 .expect("stats field should be a non-null JSON string");
-            let stats: serde_json::Value = serde_json::from_str(stats_str)?;
+            let stats: serde_json::Value =
+                serde_json::from_str(stats_str).map_err(KernelError::from)?;
             assert!(
                 stats[NUM_RECORDS].as_i64().unwrap_or(0) > 0,
                 "stats.numRecords should be populated, got: {stats}"
@@ -2021,7 +2038,7 @@ async fn test_remove_files_partitioned_with_parsed_columns(
     #[case] predicate: Option<Pred>,
     #[case] expected_partitions: &[&str],
     #[case] expect_stats: bool,
-) -> KernelResult<(), Box<dyn std::error::Error>> {
+) -> delta_kernel::Result<()> {
     let _ = tracing_subscriber::fmt::try_init();
 
     let partition_col = "country";
@@ -2033,7 +2050,7 @@ async fn test_remove_files_partitioned_with_parsed_columns(
 
     // Local directory backing: `read_actions_from_commit` reads commit JSON off disk
     // and does not support the default in-memory store's `memory://` URL.
-    let tmp_dir = tempdir()?;
+    let tmp_dir = tempdir().map_err(KernelError::from)?;
     let tmp_url = Url::from_directory_path(tmp_dir.path()).unwrap();
 
     for (table_url, engine, _store, _table_name) in setup_test_tables(
@@ -2131,7 +2148,8 @@ async fn test_remove_files_partitioned_with_parsed_columns(
                 let stats_str = remove["stats"]
                     .as_str()
                     .expect("stats field should be a non-null JSON string");
-                let stats: serde_json::Value = serde_json::from_str(stats_str)?;
+                let stats: serde_json::Value =
+                    serde_json::from_str(stats_str).map_err(KernelError::from)?;
                 assert!(
                     stats[NUM_RECORDS].as_i64().unwrap_or(0) > 0,
                     "stats.numRecords should be populated, got: {stats}"
@@ -2182,12 +2200,13 @@ type DvSmallTableSetup = (
 ///
 /// Returns `(temp_dir, table_path, engine, snapshot)`. Keep `temp_dir` alive for the test;
 /// `table_path` lets callers read commit JSON directly off disk.
-fn setup_table_with_dv_small() -> KernelResult<DvSmallTableSetup, Box<dyn std::error::Error>> {
-    let temp_dir = tempfile::tempdir()?;
+fn setup_table_with_dv_small() -> delta_kernel::Result<DvSmallTableSetup> {
+    let temp_dir = tempfile::tempdir().map_err(KernelError::from)?;
     let table_path = temp_dir.path().join("table-with-dv-small");
     let source_path = std::fs::canonicalize(std::path::PathBuf::from(
         "./tests/data/table-with-dv-small/",
-    ))?;
+    ))
+    .map_err(KernelError::from)?;
     copy_directory(&source_path, &table_path)?;
 
     let table_url = Url::from_directory_path(&table_path).expect("table path must be a valid URL");
@@ -2295,11 +2314,8 @@ async fn create_number_table(
     writer_features: Vec<&str>,
     column_mapping_mode: &str,
     use_37_protocol: bool,
-) -> KernelResult<
-    (tempfile::TempDir, Url, Arc<dyn Engine>, Arc<Snapshot>),
-    Box<dyn std::error::Error>,
-> {
-    let temp_dir = tempfile::tempdir()?;
+) -> delta_kernel::Result<(tempfile::TempDir, Url, Arc<dyn Engine>, Arc<Snapshot>)> {
+    let temp_dir = tempfile::tempdir().map_err(KernelError::from)?;
     let temp_dir_url =
         Url::from_directory_path(temp_dir.path()).expect("tempdir path must be a valid URL");
     let (store, engine, table_location) = engine_store_setup("number_table", Some(&temp_dir_url));

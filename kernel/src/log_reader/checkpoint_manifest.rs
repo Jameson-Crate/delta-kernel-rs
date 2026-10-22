@@ -202,7 +202,7 @@ mod tests {
     }
 
     #[test]
-    fn test_manifest_phase_extracts_file_paths() -> KernelResult<(), Box<dyn std::error::Error>> {
+    fn test_manifest_phase_extracts_file_paths() -> delta_kernel::Result<()> {
         let (engine, snapshot, _tempdir) = load_test_table("with_checkpoint_no_last_checkpoint")?;
         Ok(verify_manifest_phase(
             engine,
@@ -213,7 +213,7 @@ mod tests {
     }
 
     #[test]
-    fn test_manifest_phase_early_finalize_error() -> KernelResult<(), Box<dyn std::error::Error>> {
+    fn test_manifest_phase_early_finalize_error() -> delta_kernel::Result<()> {
         let (engine, snapshot, _tempdir) = load_test_table("with_checkpoint_no_last_checkpoint")?;
 
         let manifest_phase = CheckpointManifestReader::try_new(
@@ -232,7 +232,7 @@ mod tests {
     }
 
     #[test]
-    fn test_manifest_phase_collects_sidecars() -> KernelResult<(), Box<dyn std::error::Error>> {
+    fn test_manifest_phase_collects_sidecars() -> delta_kernel::Result<()> {
         let (engine, snapshot, _tempdir) = load_test_table("v2-checkpoints-json-with-sidecars")?;
         Ok(verify_manifest_phase(
             engine,
@@ -246,8 +246,7 @@ mod tests {
     }
 
     #[test]
-    fn test_manifest_phase_collects_sidecars_parquet(
-    ) -> KernelResult<(), Box<dyn std::error::Error>> {
+    fn test_manifest_phase_collects_sidecars_parquet() -> delta_kernel::Result<()> {
         let (engine, snapshot, _tempdir) = load_test_table("v2-checkpoints-parquet-with-sidecars")?;
         Ok(verify_manifest_phase(
             engine,
