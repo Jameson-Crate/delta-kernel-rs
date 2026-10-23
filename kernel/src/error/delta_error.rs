@@ -123,6 +123,18 @@ impl DeltaError {
         )
     }
 
+    /// Creates an adaptive-metadata failure for the explicitly stored column-mapping `mode`.
+    pub fn delta_adaptive_metadata_requires_column_mapping_id_mode(mode: impl ToString) -> Self {
+        Self::new(
+            DeltaErrorCondition::DeltaAdaptiveMetadataRequiresColumnMappingIdMode,
+            delta_parameters![
+                "feature" => "adaptiveMetadata-preview",
+                "prop" => "delta.columnMapping.mode",
+                "mode" => mode,
+            ],
+        )
+    }
+
     /// Creates a duplicate-partition-column failure with `duplicate_columns` as diagnostic names.
     pub fn delta_duplicate_partition_columns(duplicate_columns: impl ToString) -> Self {
         Self::new(

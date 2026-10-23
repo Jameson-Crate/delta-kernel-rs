@@ -272,8 +272,6 @@ pub(crate) enum FeatureRequirement {
     NotSupported(TableFeature),
     /// Feature must NOT be enabled (may be supported but property must not activate it)
     NotEnabled(TableFeature),
-    /// Custom validation logic run against the protocol and table properties.
-    Custom(fn(&Protocol, &TableProperties) -> KernelResult<()>),
 }
 
 /// Minimum protocol versions for legacy (pre-feature-list) inference.
@@ -297,7 +295,7 @@ pub(crate) struct FeatureInfo {
     /// `Some` for features that predate feature lists and can be inferred from protocol version.
     /// `None` for features that require explicit feature lists (reader v3+ / writer v7+).
     pub min_legacy_version: Option<MinReaderWriterVersion>,
-    /// Requirements this feature has (features + custom validations)
+    /// Dependencies and exclusions for this feature.
     pub feature_requirements: &'static [FeatureRequirement],
     /// Rust kernel's support for this feature (may vary by Operation type)
     ///
@@ -682,15 +680,6 @@ static ADAPTIVE_METADATA_PREVIEW_INFO: FeatureInfo = FeatureInfo {
     min_legacy_version: None,
     feature_requirements: &[
         FeatureRequirement::Enabled(TableFeature::ColumnMapping),
-        FeatureRequirement::Custom(|_protocol, properties| {
-            require!(
-                properties.column_mapping_mode == Some(ColumnMappingMode::Id),
-                KernelError::invalid_protocol(
-                    "Feature 'adaptiveMetadata-preview' requires column mapping in 'id' mode"
-                )
-            );
-            Ok(())
-        }),
         FeatureRequirement::Enabled(TableFeature::RowTracking),
         FeatureRequirement::Enabled(TableFeature::DomainMetadata),
         FeatureRequirement::Enabled(TableFeature::DeletionVectors),

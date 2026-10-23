@@ -392,6 +392,28 @@ impl TableConfiguration {
         logical_schema: SchemaRef,
     ) -> crate::Result<Self> {
         let table_properties = metadata.parse_table_properties();
+        if protocol.has_table_feature(&TableFeature::AdaptiveMetadataPreview) {
+            if let Some(mode) = metadata
+                .configuration()
+                .get(crate::table_properties::COLUMN_MAPPING_MODE)
+                .filter(|_| {
+                    matches!(
+                        table_properties.column_mapping_mode,
+                        Some(ColumnMappingMode::None | ColumnMappingMode::Name)
+                    )
+                })
+            {
+                return Err(
+                    crate::DeltaError::delta_adaptive_metadata_requires_column_mapping_id_mode(
+                        mode,
+                    )
+                    .with_source(KernelError::invalid_protocol(
+                        "Feature 'adaptiveMetadata-preview' requires column mapping in 'id' mode",
+                    ))
+                    .into(),
+                );
+            }
+        }
         let column_mapping_mode = column_mapping_mode(&protocol, &table_properties);
 
         let physical_schema = Arc::new(logical_schema.make_physical(column_mapping_mode)?);
@@ -997,9 +1019,6 @@ impl TableConfiguration {
                             "Feature '{feature}' requires '{dep}' to not be enabled"
                         ))
                     );
-                }
-                FeatureRequirement::Custom(check) => {
-                    check(&self.protocol, &self.table_properties)?;
                 }
             }
         }
@@ -3271,12 +3290,12 @@ mod test {
         all_adaptive_metadata_deps(),
         None
     )]
-    // Column mapping enabled but in `name` mode -> the `id`-mode Custom check fires.
+    // An explicitly stored non-id mode is rejected during configuration construction.
     #[case::cm_name_mode_rejected(
         all_adaptive_metadata_props(),
         Some(ColumnMappingMode::Name),
         all_adaptive_metadata_deps(),
-        Some("column mapping in 'id' mode")
+        Some("requires column mapping mode 'id'")
     )]
     // Column mapping feature absent entirely -> the `Enabled(ColumnMapping)` arm fires first.
     #[case::column_mapping_not_supported(
@@ -3346,12 +3365,56 @@ mod test {
                     .with_writer_features(&writer_features)
                     .build(),
             )
-            .build();
-        let result = config.validate_feature_requirements(&TableFeature::AdaptiveMetadataPreview);
+            .try_build();
+        let result = config.and_then(|config| {
+            config
+                .validate_feature_requirements(&TableFeature::AdaptiveMetadataPreview)
+                .map_err(crate::Error::Kernel)
+        });
         match expected_error_substring {
             Some(msg) => assert_result_error_with_message(result, msg),
             None => assert!(result.is_ok(), "expected Ok, got {result:?}"),
         }
+    }
+
+    #[rstest]
+    #[case::name("name")]
+    #[case::none("none")]
+    fn adaptive_metadata_explicit_non_id_mode_returns_delta_error(#[case] mode: &str) {
+        let error = MockTableConfigurationBuilder::new()
+            .with_column_mapping(mode.parse::<ColumnMappingMode>().unwrap())
+            .with_protocol(
+                MockProtocolBuilder::new()
+                    .with_features([
+                        TableFeature::AdaptiveMetadataPreview,
+                        TableFeature::ColumnMapping,
+                    ])
+                    .build(),
+            )
+            .try_build()
+            .unwrap_err();
+        let crate::Error::Delta(error) = error else {
+            panic!("expected adaptive-metadata mode error, got {error:?}");
+        };
+        assert_eq!(
+            error.condition(),
+            crate::DeltaErrorCondition::DeltaAdaptiveMetadataRequiresColumnMappingIdMode
+        );
+        assert_eq!(error.sql_state(), Some("42000"));
+        let parameters: Vec<_> = error
+            .parameters()
+            .iter()
+            .map(|p| (p.name(), p.value()))
+            .collect();
+        assert_eq!(
+            parameters,
+            vec![
+                ("feature", "adaptiveMetadata-preview"),
+                ("prop", "delta.columnMapping.mode"),
+                ("mode", mode)
+            ]
+        );
+        assert!(std::error::Error::source(&error).is_some());
     }
 
     /// The table properties that enable adaptiveMetadata-preview's property-gated dependencies.
