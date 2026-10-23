@@ -1727,9 +1727,14 @@ mod tests {
     }
 
     #[rstest]
+    #[case::duplicate(vec!["value", "value"], crate::DeltaErrorCondition::DeltaDuplicateColumnsFoundPartitionColumns, "42711")]
+    #[case::missing(vec!["absent"], crate::DeltaErrorCondition::DeltaPartitionColumnNotFound, "42703")]
     #[tokio::test]
-    async fn snapshot_rejects_duplicate_partition_columns(
+    async fn snapshot_rejects_invalid_partition_columns(
         #[values(false, true)] incremental: bool,
+        #[case] partition_columns: Vec<&str>,
+        #[case] condition: crate::DeltaErrorCondition,
+        #[case] sql_state: &str,
     ) -> crate::Result<()> {
         let table_root = "memory:///partition_validation/";
         let store = Arc::new(InMemory::new());
@@ -1746,7 +1751,7 @@ mod tests {
         .await;
         let base = Snapshot::builder_for(table_root).build(&engine)?;
         let mut metadata = create_metadata(None, None, None, None, false);
-        metadata["metaData"]["partitionColumns"] = json!(["value", "value"]);
+        metadata["metaData"]["partitionColumns"] = json!(partition_columns);
         commit(table_root, store.as_ref(), 1, vec![metadata]).await;
         let result = if incremental {
             Snapshot::builder_from(base).build(&engine)
@@ -1754,14 +1759,14 @@ mod tests {
             Snapshot::builder_for(table_root).build(&engine)
         };
         let crate::Error::Delta(error) = result.unwrap_err() else {
-            panic!("expected duplicate partition columns");
+            panic!("expected invalid partition columns");
         };
-        assert_eq!(
-            error.condition(),
-            crate::DeltaErrorCondition::DeltaDuplicateColumnsFoundPartitionColumns
-        );
-        assert_eq!(error.sql_state(), Some("42711"));
-        assert_eq!(error.parameters()[0].value(), "value");
+        assert_eq!(error.condition(), condition);
+        assert_eq!(error.sql_state(), Some(sql_state));
+        assert_eq!(error.parameters()[0].value(), partition_columns[0]);
+        if condition == crate::DeltaErrorCondition::DeltaPartitionColumnNotFound {
+            assert_eq!(error.parameters()[1].value(), "value");
+        }
         assert!(std::error::Error::source(&error).is_some());
         Ok(())
     }

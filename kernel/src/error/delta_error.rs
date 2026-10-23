@@ -131,6 +131,18 @@ impl DeltaError {
         )
     }
 
+    /// Creates a missing-partition-column failure for `column_name`, with `schema_map` listing
+    /// the logical schema fields available to resolve it.
+    pub fn delta_partition_column_not_found(
+        column_name: impl ToString,
+        schema_map: impl ToString,
+    ) -> Self {
+        Self::new(
+            DeltaErrorCondition::DeltaPartitionColumnNotFound,
+            delta_parameters!["columnName" => column_name, "schemaMap" => schema_map],
+        )
+    }
+
     /// Creates an error without a diagnostic cause and captures its backtrace.
     ///
     /// `parameters` must contain exactly [`DeltaErrorCondition::parameter_names`], in that order.

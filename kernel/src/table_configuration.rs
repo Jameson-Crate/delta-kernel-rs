@@ -289,9 +289,18 @@ fn validate_partition_columns(
         }
         require!(
             logical_schema.field(col).is_some(),
-            crate::Error::Kernel(KernelError::generic(format!(
+            crate::DeltaError::delta_partition_column_not_found(
+                col,
+                logical_schema
+                    .fields()
+                    .map(|field| field.name().as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            )
+            .with_source(KernelError::generic(format!(
                 "Partition column '{col}' not found in schema"
             )))
+            .into()
         );
     }
     Ok(())
@@ -1350,14 +1359,35 @@ mod test {
         assert_result_error_with_message(StatsOutputSchemas::try_new(logical, physical), error);
     }
 
-    #[test]
-    fn table_configuration_rejects_partition_column_missing_from_schema() {
+    #[rstest]
+    #[case::missing("absent")]
+    #[case::case_sensitive("PART")]
+    fn table_configuration_reports_missing_logical_partition_column(#[case] missing: &str) {
         let result = MockTableConfigurationBuilder::new()
-            .with_partition_columns(["missing"])
+            .with_schema(schema! {
+                nullable "value": INTEGER,
+                nullable "part": STRING,
+            })
+            .with_partition_columns([missing])
             .with_protocol(MockProtocolBuilder::new().with_versions(1, 2).build())
             .try_build();
-
-        assert_result_error_with_message(result, "Partition column 'missing' not found in schema");
+        let crate::Error::Delta(error) = result.unwrap_err() else {
+            panic!("expected missing partition column");
+        };
+        assert_eq!(
+            error.condition(),
+            crate::DeltaErrorCondition::DeltaPartitionColumnNotFound
+        );
+        assert_eq!(error.sql_state(), Some("42703"));
+        assert_eq!(
+            error
+                .parameters()
+                .iter()
+                .map(|parameter| (parameter.name(), parameter.value()))
+                .collect::<Vec<_>>(),
+            [("columnName", missing), ("schemaMap", "value, part")]
+        );
+        assert!(std::error::Error::source(&error).is_some());
     }
 
     #[derive(Debug, PartialEq)]
