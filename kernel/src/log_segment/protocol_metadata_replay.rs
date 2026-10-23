@@ -53,6 +53,40 @@ impl LogSegment {
         &self,
         engine: &dyn Engine,
         crc: Option<&Arc<Crc>>,
+    ) -> crate::Result<PmResolution> {
+        self.read_protocol_metadata_opt_impl(engine, crc)
+            .map_err(|error| {
+                if let (KernelError::FileNotFound(path), Some(checkpoint)) =
+                    (error.without_backtrace(), self.checkpoint_version)
+                {
+                    // Executors may report either the file URL or the decoded object-store path.
+                    // Match a required commit exactly so checkpoint/sidecar failures stay distinct.
+                    let is_commit = self.find_commit_cover().iter().any(|file| {
+                        let url = &file.location;
+                        let decoded =
+                            percent_encoding::percent_decode_str(url.path()).decode_utf8_lossy();
+                        path == url.as_str()
+                            || path == decoded.as_ref()
+                            || path == decoded.trim_start_matches('/')
+                    });
+                    if is_commit {
+                        return crate::DeltaError::delta_log_file_not_found(
+                            self.end_version,
+                            checkpoint,
+                            &self.log_root,
+                        )
+                        .with_source(error)
+                        .into();
+                    }
+                }
+                crate::Error::Kernel(error)
+            })
+    }
+
+    fn read_protocol_metadata_opt_impl(
+        &self,
+        engine: &dyn Engine,
+        crc: Option<&Arc<Crc>>,
     ) -> KernelResult<PmResolution> {
         // Case 1: If CRC at target version, use it directly and exit early.
         if let Some(crc) = crc.filter(|c| c.version == self.end_version) {

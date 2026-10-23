@@ -7,7 +7,7 @@ use delta_kernel::arrow::ffi::to_ffi;
 use delta_kernel::engine::arrow_data::EngineDataArrowExt;
 use delta_kernel::table_changes::scan::TableChangesScan;
 use delta_kernel::table_changes::TableChanges;
-use delta_kernel::{EngineData, KernelError, KernelResult, KernelResultIteratorStatic, Version};
+use delta_kernel::{EngineData, KernelError, KernelResult, Version};
 use delta_kernel_ffi_macros::handle_descriptor;
 use tracing::debug;
 use url::Url;
@@ -73,7 +73,7 @@ fn table_changes_impl(
     extern_engine: &dyn ExternEngine,
     start_version: Version,
     end_version: Option<Version>,
-) -> KernelResult<Handle<ExclusiveTableChanges>> {
+) -> delta_kernel::Result<Handle<ExclusiveTableChanges>> {
     let table_changes = TableChanges::try_new(
         url?,
         extern_engine.engine().as_ref(),
@@ -233,7 +233,7 @@ pub unsafe extern "C" fn table_changes_scan_physical_schema(
     table_changes_scan.physical_schema().clone().into()
 }
 
-type TableChangesData = Mutex<KernelResultIteratorStatic<Box<dyn EngineData>>>;
+type TableChangesData = Mutex<delta_kernel::ResultIteratorStatic<Box<dyn EngineData>>>;
 
 pub struct ScanTableChangesIterator {
     data: TableChangesData,
@@ -270,7 +270,7 @@ pub unsafe extern "C" fn table_changes_scan_execute(
 fn table_changes_scan_execute_impl(
     table_changes_scan: &TableChangesScan,
     engine: Arc<dyn ExternEngine>,
-) -> KernelResult<Handle<SharedScanTableChangesIterator>> {
+) -> delta_kernel::Result<Handle<SharedScanTableChangesIterator>> {
     let table_changes_iter = table_changes_scan.execute(engine.engine().clone())?;
     let data = ScanTableChangesIterator {
         data: Mutex::new(Box::new(table_changes_iter)),
@@ -311,7 +311,7 @@ pub unsafe extern "C" fn scan_table_changes_next(
 
 fn scan_table_changes_next_impl(
     data: &ScanTableChangesIterator,
-) -> KernelResult<*mut ArrowFFIData> {
+) -> delta_kernel::Result<*mut ArrowFFIData> {
     let mut data = data
         .data
         .lock()
@@ -325,7 +325,7 @@ fn scan_table_changes_next_impl(
 
     let batch_struct_array: StructArray = record_batch.into();
     let array_data: ArrayData = batch_struct_array.into_data();
-    let (out_array, out_schema) = to_ffi(&array_data)?;
+    let (out_array, out_schema) = to_ffi(&array_data).map_err(KernelError::from)?;
     Ok(Box::into_raw(Box::new(ArrowFFIData {
         array: out_array,
         schema: out_schema,
@@ -491,10 +491,10 @@ mod tests {
     fn read_scan(
         scan: &TableChangesScan,
         engine: Arc<dyn Engine>,
-    ) -> KernelResult<Vec<RecordBatch>> {
+    ) -> delta_kernel::Result<Vec<RecordBatch>> {
         let scan_results = scan.execute(engine)?;
         scan_results
-            .map(EngineDataArrowExt::try_into_record_batch)
+            .map(|batch| -> delta_kernel::Result<_> { Ok(batch?.try_into_record_batch()?) })
             .try_collect()
     }
 

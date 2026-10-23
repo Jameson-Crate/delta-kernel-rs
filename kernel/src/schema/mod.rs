@@ -49,20 +49,38 @@ pub(crate) mod void_utils;
 
 /// Prefix of the error message the schema deserializers emit for an unsupported type.
 const UNSUPPORTED_DELTA_TYPE_ERROR_PREFIX: &str = "Unsupported Delta table type";
+const DUPLICATE_FIELD_NAME_ERROR_PREFIX: &str = "Duplicate field name (case-insensitive)";
 
 /// Builds the serde custom error for a Delta type the kernel does not support. Pairs with
-/// [`is_unsupported_delta_type_error`] for detecting whether a serde error is this kind.
+/// [`unsupported_delta_type_name`] to recover the rejected token at the metadata boundary.
 fn unsupported_delta_type_error<E: serde::de::Error>(name: &str) -> E {
     E::custom(format!("{UNSUPPORTED_DELTA_TYPE_ERROR_PREFIX}: '{name}'"))
 }
 
-/// Returns `true` if `error` is the "unsupported Delta type" failure produced by
-/// `unsupported_delta_type_error`.
-pub(crate) fn is_unsupported_delta_type_error(error: &serde_json::Error) -> bool {
-    error.is_data()
-        && error
-            .to_string()
-            .starts_with(UNSUPPORTED_DELTA_TYPE_ERROR_PREFIX)
+/// Recovers the rejected type token from `unsupported_delta_type_error` through serde.
+pub(crate) fn unsupported_delta_type_name(error: &serde_json::Error) -> Option<String> {
+    quoted_schema_error_parameter(error, &format!("{UNSUPPORTED_DELTA_TYPE_ERROR_PREFIX}: '"))
+}
+
+/// Recovers the rejected logical name from the duplicate-field diagnostic emitted by
+/// `StructType::try_new` through serde. Other schema and JSON errors are left unclassified.
+pub(crate) fn duplicate_delta_field_name(error: &serde_json::Error) -> Option<String> {
+    quoted_schema_error_parameter(
+        error,
+        &format!("Schema error: {DUPLICATE_FIELD_NAME_ERROR_PREFIX}: '"),
+    )
+}
+
+// Serde erases custom error types. Match only our decoder's diagnostic prefixes and take the
+// final quote so names containing quotes survive, excluding serde's appended line/column context.
+fn quoted_schema_error_parameter(error: &serde_json::Error, prefix: &str) -> Option<String> {
+    if !error.is_data() {
+        return None;
+    }
+    let message = error.to_string();
+    let parameter = message.strip_prefix(prefix)?;
+    let (parameter, _) = parameter.rsplit_once('\'')?;
+    Some(parameter.to_string())
 }
 
 pub type Schema = StructType;
@@ -906,7 +924,7 @@ impl StructType {
             let key = field.name.to_lowercase();
             if !seen_lowercase_names.insert(key) {
                 return Err(KernelError::schema(format!(
-                    "Duplicate field name (case-insensitive): '{}'",
+                    "{DUPLICATE_FIELD_NAME_ERROR_PREFIX}: '{}'",
                     field.name
                 )));
             }

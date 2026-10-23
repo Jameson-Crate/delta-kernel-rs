@@ -54,7 +54,7 @@ async fn append_row<E: TaskExecutor>(
     engine: &Arc<DefaultEngine<E>>,
     kind: TableKind,
     value: i32,
-) -> KernelResult<Arc<Snapshot>> {
+) -> delta_kernel::Result<Arc<Snapshot>> {
     let column: ArrayRef = Arc::new(Int32Array::from(vec![value]));
     Ok(insert_data_with(
         snapshot,
@@ -76,7 +76,7 @@ async fn setup_multi_version_table<E: TaskExecutor>(
     engine: &Arc<DefaultEngine<E>>,
     table_path: &str,
     kind: TableKind,
-) -> KernelResult<()> {
+) -> delta_kernel::Result<()> {
     let schema = schema_ref! { nullable "id": INTEGER };
     let builder = create_table(table_path, schema, "test_engine", true);
     let builder = match kind {
@@ -136,11 +136,10 @@ async fn deeply_nested_schema_snapshot_load_returns_schema_error() -> KernelResu
             "recursion limit: recursion limit exceeded"
         ),
     );
-    let error = match result.unwrap_err() {
-        KernelError::Backtraced { source, .. } => *source,
-        error => error,
+    let delta_kernel::Error::Kernel(error) = result.unwrap_err() else {
+        panic!("expected a kernel schema error");
     };
-    assert!(matches!(error, KernelError::Schema(_)));
+    assert!(matches!(error.without_backtrace(), KernelError::Schema(_)));
     Ok(())
 }
 
@@ -195,7 +194,7 @@ async fn snapshot_load_validates_reader_protocol(
     #[case] case: SnapshotLoadProtocolCase,
     #[values(false, true)] incremental: bool,
     #[values(false, true)] time_travel: bool,
-) -> KernelResult<()> {
+) -> delta_kernel::Result<()> {
     let (store, engine, table_url) = engine_store_setup("snapshot_feature_validation", None);
     create_table(
         table_url.as_str(),
@@ -259,7 +258,7 @@ async fn row_tracking_configuration_rejects_only_enabled_and_suspended(
     #[case] suspended: Option<bool>,
     #[case] expect_error: bool,
     #[values(false, true)] incremental: bool,
-) -> KernelResult<()> {
+) -> delta_kernel::Result<()> {
     let configuration: HashMap<_, _> = [
         ("delta.enableRowTracking", enabled),
         ("delta.rowTrackingSuspended", suspended),
@@ -308,7 +307,7 @@ async fn row_tracking_configuration_rejects_only_enabled_and_suspended(
 async fn built_as_latest_is_inherited_by_derived_snapshots(
     #[values(true, false)] base_snap_time_travel_to_latest: bool,
     #[values(TableKind::FileSystem, TableKind::CatalogManaged)] kind: TableKind,
-) -> KernelResult<()> {
+) -> delta_kernel::Result<()> {
     let (_temp_dir, table_path, engine) = test_table_setup_mt()?;
     setup_multi_version_table(&engine, &table_path, kind).await?;
 
@@ -353,7 +352,7 @@ async fn built_as_latest_is_inherited_by_derived_snapshots(
 async fn built_as_latest_on_fresh_and_incremental_build(
     #[values(None, Some(1), Some(3))] time_travel_version: Option<Version>,
     #[values(TableKind::FileSystem, TableKind::CatalogManaged)] kind: TableKind,
-) -> KernelResult<()> {
+) -> delta_kernel::Result<()> {
     let (_temp_dir, table_path, engine) = test_table_setup_mt()?;
     setup_multi_version_table(&engine, &table_path, kind).await?;
 

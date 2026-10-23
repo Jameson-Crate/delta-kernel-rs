@@ -7,14 +7,14 @@ use tracing::{info, instrument};
 
 use crate::cancellation::CancellationTokenRef;
 use crate::log_path::LogPath;
-use crate::log_segment::{validate_catalog_managed_log_tail, LogSegment};
+use crate::log_segment::{validate_snapshot_log_tail, LogSegment};
 use crate::log_segment_files::CheckpointHandling;
 use crate::metrics::events::SNAPSHOT_COMPLETED_SPAN;
 use crate::metrics::{MetricId, SnapshotLoadMetricContext, SnapshotLoadType};
 use crate::path::DELTA_LOG_DIR_WITH_SLASH;
 use crate::snapshot::{SnapshotHint, SnapshotRef};
-use crate::utils::{require, try_parse_uri, PhantomType};
-use crate::{Engine, KernelError, KernelResult, Snapshot, Version};
+use crate::utils::{require, try_parse_uri_with_missing_path, PhantomType};
+use crate::{DeltaError, Engine, Error, KernelError, KernelResult, Result, Snapshot, Version};
 
 /// Marker for builders that load a snapshot from a table root.
 #[doc(hidden)]
@@ -31,8 +31,8 @@ pub struct FromSnapshot;
 /// ```no_run
 /// # use delta_kernel::{Snapshot, Engine};
 /// # use url::Url;
-/// # fn example(engine: &dyn Engine) -> delta_kernel::KernelResult<()> {
-/// let table_root = Url::parse("file:///path/to/table")?;
+/// # fn example(engine: &dyn Engine) -> delta_kernel::Result<()> {
+/// let table_root = Url::parse("file:///path/to/table").map_err(delta_kernel::KernelError::from)?;
 ///
 /// // Build a snapshot
 /// let snapshot = Snapshot::builder_for(table_root.clone())
@@ -318,6 +318,14 @@ impl<Mode> SnapshotBuilder<Mode> {
     ///
     /// - `engine`: Implementation of [`Engine`] apis.
     ///
+    /// # Errors
+    ///
+    /// For builds without a snapshot hint, returns `DELTA_PATH_DOES_NOT_EXIST` if the local root
+    /// is absent or no transaction log is found. The original cause is retained. Invalid locations
+    /// use [`Error::Kernel`]. Missing reconstruction files after a known checkpoint return
+    /// `DELTA_LOG_FILE_NOT_FOUND` with the target version, checkpoint, and log root. Gaps within
+    /// required commits or ordered catalog tails return `DELTA_VERSIONS_NOT_CONTIGUOUS`.
+    ///
     /// [`MetricEvent::SnapshotBuildSuccess`]: crate::metrics::MetricEvent::SnapshotBuildSuccess
     /// [`MetricEvent::SnapshotBuildFailure`]: crate::metrics::MetricEvent::SnapshotBuildFailure
     // `is_catalog_managed` is the requested load mode, not the confirmed protocol
@@ -328,7 +336,7 @@ impl<Mode> SnapshotBuilder<Mode> {
         fields(path = %self.table_path(), report, enable_call_frame, version = tracing::field::Empty, operation_id = %self.operation_id, is_catalog_managed = self.max_catalog_version.is_some(), correlation_id = self.correlation_id.as_deref().unwrap_or(""), load_type = self.load_type().as_ref()),
         err
     )]
-    pub fn build(self, engine: &dyn Engine) -> KernelResult<SnapshotRef> {
+    pub fn build(self, engine: &dyn Engine) -> Result<SnapshotRef> {
         // Fold the context into the message string rather than passing structured fields: this
         // `info!` fires inside the `snap.build` metrics span, where any field the
         // `SnapshotBuildSuccess` event doesn't recognize would trip a spurious "Invalid field"
@@ -391,15 +399,31 @@ impl<Mode> SnapshotBuilder<Mode> {
             let built_as_latest = version.is_none() || version == max_catalog_version;
 
             if let Some(table_root) = table_root {
-                let table_url = try_parse_uri(table_root)?;
+                let table_url = try_parse_uri_with_missing_path(&table_root, |error| {
+                    Error::Delta(
+                        DeltaError::delta_path_does_not_exist(&table_root).with_source(error),
+                    )
+                })?;
                 let log_segment = LogSegment::for_snapshot(
                     engine.storage_handler().as_ref(),
-                    table_url.join(DELTA_LOG_DIR_WITH_SLASH)?,
+                    table_url
+                        .join(DELTA_LOG_DIR_WITH_SLASH)
+                        .map_err(KernelError::from)?,
                     log_tail,
                     effective_version,
                     metric_context.clone(),
                     cancellation_token.as_ref(),
-                )?;
+                )
+                .map_err(|error| match error {
+                    Error::Kernel(error)
+                        if matches!(error.without_backtrace(), KernelError::EmptyLog) =>
+                    {
+                        Error::Delta(
+                            DeltaError::delta_path_does_not_exist(&table_root).with_source(error),
+                        )
+                    }
+                    _ => error,
+                })?;
                 Snapshot::try_new_from_log_segment(
                     table_url,
                     log_segment,
@@ -411,9 +435,9 @@ impl<Mode> SnapshotBuilder<Mode> {
                 .map(Into::into)?
             } else {
                 let Some(existing_snapshot) = existing_snapshot else {
-                    return Err(KernelError::internal_error(
+                    return Err(Error::Kernel(KernelError::internal_error(
                         "SnapshotBuilder should have either table_root or existing_snapshot",
-                    ));
+                    )));
                 };
                 Snapshot::try_new_from(
                     existing_snapshot,
@@ -446,8 +470,8 @@ impl<Mode> SnapshotBuilder<Mode> {
         version: Option<Version>,
         max_catalog_version: Option<Version>,
         log_tail: &[crate::path::ParsedLogPath],
-    ) -> KernelResult<()> {
-        validate_catalog_managed_log_tail(version, max_catalog_version, log_tail)
+    ) -> Result<()> {
+        validate_snapshot_log_tail(version, max_catalog_version, log_tail)
     }
 
     /// Post-build validation: catalog-managed tables must have max_catalog_version, and
@@ -520,6 +544,7 @@ impl<Mode> SnapshotBuilder<Mode> {
 
 #[cfg(test)]
 pub(super) mod tests {
+    use std::error::Error as _;
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -566,6 +591,90 @@ pub(super) mod tests {
         )
         .await?;
         Ok(())
+    }
+
+    #[test]
+    fn missing_table_path_returns_delta_error_with_original_cause() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let missing_path = temp_dir.path().join("missing");
+        let (engine, _, _) = setup_test();
+        let error = SnapshotBuilder::new_for(missing_path.to_str().unwrap())
+            .build(engine.as_ref())
+            .unwrap_err();
+        let Error::Delta(error) = error else {
+            panic!("expected a Delta error for the missing table path");
+        };
+        assert_eq!(
+            error.condition(),
+            crate::DeltaErrorCondition::DeltaPathDoesNotExist
+        );
+        assert_eq!(
+            error.parameters()[0].value(),
+            missing_path.to_string_lossy()
+        );
+        assert!(matches!(
+            error.source().unwrap().downcast_ref::<KernelError>(),
+            Some(KernelError::InvalidTableLocation(_))
+        ));
+    }
+
+    #[rstest::rstest]
+    #[case("memory:///", false)]
+    #[case("memory:///", true)]
+    fn empty_log_returns_missing_table_error(#[case] root: &str, #[case] time_travel: bool) {
+        let (engine, _, _) = setup_test();
+        let mut builder = SnapshotBuilder::new_for(root);
+        if time_travel {
+            builder = builder.at_version(0);
+        }
+        let Error::Delta(error) = builder.build(engine.as_ref()).unwrap_err() else {
+            panic!("expected a missing-table Delta error");
+        };
+        assert_eq!(
+            error.condition(),
+            crate::DeltaErrorCondition::DeltaPathDoesNotExist
+        );
+        assert_eq!(error.parameters()[0].value(), root);
+        assert!(matches!(
+            error.source().unwrap().downcast_ref::<KernelError>(),
+            Some(KernelError::EmptyLog)
+        ));
+    }
+
+    #[rstest::rstest]
+    #[case(false)]
+    #[case(true)]
+    fn existing_local_root_without_log_returns_missing_table_error(#[case] file_url: bool) {
+        let directory = tempfile::tempdir().unwrap();
+        let root = if file_url {
+            url::Url::from_directory_path(directory.path())
+                .unwrap()
+                .to_string()
+        } else {
+            directory.path().to_string_lossy().into_owned()
+        };
+        let (engine, _, _) = setup_test();
+        let Error::Delta(error) = SnapshotBuilder::new_for(&root)
+            .build(engine.as_ref())
+            .unwrap_err()
+        else {
+            panic!("expected a missing-table Delta error");
+        };
+        assert_eq!(
+            error.condition(),
+            crate::DeltaErrorCondition::DeltaPathDoesNotExist
+        );
+        assert_eq!(error.parameters()[0].value(), root);
+    }
+
+    #[test]
+    fn file_table_root_retains_kernel_location_error() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let (engine, _, _) = setup_test();
+        assert!(matches!(
+            SnapshotBuilder::new_for(file.path().to_str().unwrap()).build(engine.as_ref()),
+            Err(Error::Kernel(KernelError::InvalidTableLocation(_)))
+        ));
     }
 
     #[test_log::test(tokio::test)]
@@ -630,12 +739,14 @@ pub(super) mod tests {
         let result = SnapshotBuilder::new_for(table_root.clone()).build(engine);
         assert!(result.is_err());
 
-        let err = result.unwrap_err();
-        let err_msg = err.to_string();
-        assert!(
-            err_msg.contains("Unsupported Delta table type: 'interval year to second'"),
-            "Expected clear error message about unsupported type, got: {err_msg}"
+        let crate::Error::Delta(error) = result.unwrap_err() else {
+            panic!("expected unsupported schema type");
+        };
+        assert_eq!(
+            error.condition(),
+            crate::DeltaErrorCondition::DeltaParsingUnsupportedDataType
         );
+        assert_eq!(error.parameters()[0].value(), "interval year to second");
 
         Ok(())
     }
@@ -950,7 +1061,12 @@ pub(super) mod tests {
                 .with_log_tail(log_tail)
                 .build(engine.as_ref());
 
-            assert!(matches!(result, Err(KernelError::MaxCatalogVersion(_))));
+            assert!(matches!(
+                result,
+                Err(delta_kernel::Error::Kernel(KernelError::MaxCatalogVersion(
+                    _
+                )))
+            ));
 
             Ok(())
         }
@@ -964,7 +1080,12 @@ pub(super) mod tests {
                 .with_max_catalog_version(3)
                 .build(engine.as_ref());
 
-            assert!(matches!(result, Err(KernelError::MaxCatalogVersion(_))));
+            assert!(matches!(
+                result,
+                Err(delta_kernel::Error::Kernel(KernelError::MaxCatalogVersion(
+                    _
+                )))
+            ));
 
             Ok(())
         }
@@ -989,7 +1110,12 @@ pub(super) mod tests {
                 .with_max_catalog_version(3)
                 .build(engine.as_ref());
 
-            assert!(matches!(result, Err(KernelError::MaxCatalogVersion(_))));
+            assert!(matches!(
+                result,
+                Err(delta_kernel::Error::Kernel(KernelError::MaxCatalogVersion(
+                    _
+                )))
+            ));
 
             Ok(())
         }
@@ -1001,7 +1127,12 @@ pub(super) mod tests {
 
             let result = SnapshotBuilder::new_for(table_root).build(engine.as_ref());
 
-            assert!(matches!(result, Err(KernelError::MaxCatalogVersion(_))));
+            assert!(matches!(
+                result,
+                Err(delta_kernel::Error::Kernel(KernelError::MaxCatalogVersion(
+                    _
+                )))
+            ));
 
             Ok(())
         }
@@ -1018,7 +1149,12 @@ pub(super) mod tests {
                 .with_max_catalog_version(0)
                 .build(engine.as_ref());
 
-            assert!(matches!(result, Err(KernelError::MaxCatalogVersion(_))));
+            assert!(matches!(
+                result,
+                Err(delta_kernel::Error::Kernel(KernelError::MaxCatalogVersion(
+                    _
+                )))
+            ));
 
             Ok(())
         }
@@ -1042,7 +1178,12 @@ pub(super) mod tests {
                 .with_max_catalog_version(3)
                 .build(engine.as_ref());
 
-            assert!(matches!(result, Err(KernelError::MaxCatalogVersion(_))));
+            assert!(matches!(
+                result,
+                Err(delta_kernel::Error::Kernel(KernelError::MaxCatalogVersion(
+                    _
+                )))
+            ));
 
             Ok(())
         }
@@ -1096,7 +1237,12 @@ pub(super) mod tests {
             // Incremental update without mcv should fail
             let result = SnapshotBuilder::new_from(initial).build(engine.as_ref());
 
-            assert!(matches!(result, Err(KernelError::MaxCatalogVersion(_))));
+            assert!(matches!(
+                result,
+                Err(delta_kernel::Error::Kernel(KernelError::MaxCatalogVersion(
+                    _
+                )))
+            ));
 
             Ok(())
         }
@@ -1130,10 +1276,22 @@ pub(super) mod tests {
                 .with_max_catalog_version(mcv)
                 .build(engine.as_ref());
 
-            assert!(matches!(
-                result,
-                Err(KernelError::LogTailVersionsNotContiguous { .. })
-            ));
+            if log_tail_versions == [1, 3] {
+                let delta_kernel::Error::Delta(error) = result.unwrap_err() else {
+                    panic!("expected non-contiguous versions");
+                };
+                assert_eq!(
+                    error.condition(),
+                    delta_kernel::DeltaErrorCondition::DeltaVersionsNotContiguous
+                );
+            } else {
+                assert!(matches!(
+                    result,
+                    Err(delta_kernel::Error::Kernel(
+                        KernelError::LogTailVersionsNotContiguous { .. }
+                    ))
+                ));
+            }
 
             Ok(())
         }

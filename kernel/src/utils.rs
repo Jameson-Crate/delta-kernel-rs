@@ -71,20 +71,33 @@ impl<I: IntoIterator, T: FromIterator<I::Item>> CollectInto<T> for I {
 #[allow(unused)]
 #[internal_api]
 pub(crate) fn try_parse_uri(uri: impl AsRef<str>) -> KernelResult<Url> {
-    let uri = uri.as_ref();
+    try_parse_uri_with_missing_path(uri.as_ref(), |error| error)
+}
+
+/// Resolves `uri`, letting snapshot loading classify an absent local root separately from invalid
+/// locations. All other failures retain their kernel classification.
+pub(crate) fn try_parse_uri_with_missing_path<E: From<KernelError>>(
+    uri: &str,
+    missing_path: impl FnOnce(KernelError) -> E,
+) -> KernelResult<Url, E> {
     let uri_type = resolve_uri_type(uri)?;
     let url = match uri_type {
         UriType::LocalPath(path) => {
-            if !path.exists() {
-                // When we support writes, create a directory if we can
-                return Err(KernelError::InvalidTableLocation(format!(
+            let exists = path.try_exists().map_err(|error| {
+                KernelError::InvalidTableLocation(format!(
+                    "Invalid table location: {uri} Error: {error:?}"
+                ))
+            })?;
+            if !exists {
+                return Err(missing_path(KernelError::InvalidTableLocation(format!(
                     "Path does not exist: {path:?}"
-                )));
+                ))));
             }
             if !path.is_dir() {
                 return Err(KernelError::InvalidTableLocation(format!(
                     "{path:?} is not a directory"
-                )));
+                ))
+                .into());
             }
             let path = std::fs::canonicalize(path).map_err(|err| {
                 let msg = format!("Invalid table location: {uri} Error: {err:?}");

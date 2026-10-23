@@ -131,7 +131,7 @@ mod tests {
             .unwrap_err();
         assert!(matches!(
             err,
-            crate::KernelError::Generic(e) if e.contains("This table is catalog-managed and requires a catalog committer.")
+            crate::Error::Kernel(crate::KernelError::Generic(e)) if e.contains("This table is catalog-managed and requires a catalog committer.")
         ));
     }
 

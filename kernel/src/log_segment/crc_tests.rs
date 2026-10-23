@@ -410,19 +410,19 @@ struct BuiltCrcTest {
 impl BuiltCrcTest {
     /// Construct a `LogSegment` directly from the store state (no `Snapshot`) and run
     /// `build_crc_from_base` against `base`.
-    fn incrementally_build_crc(&self, base: &Crc) -> KernelResult<Crc> {
+    fn incrementally_build_crc(&self, base: &Crc) -> crate::Result<Crc> {
         let storage = self.engine.storage_handler();
         let log_root = self.url.join("_delta_log/").unwrap();
         let log_segment =
             LogSegment::for_snapshot_impl(storage.as_ref(), log_root, vec![], None, None, None)?;
-        log_segment.build_crc_from_base(&self.engine, base)
+        Ok(log_segment.build_crc_from_base(&self.engine, base)?)
     }
 
     /// Run `pick_latest_base_crc` against a directly-listed `LogSegment`, using `in_memory_base`.
     fn pick_latest_base_crc(
         &self,
         in_memory_base: Option<&Arc<Crc>>,
-    ) -> KernelResult<Option<Version>> {
+    ) -> crate::Result<Option<Version>> {
         let storage = self.engine.storage_handler();
         let log_root = self.url.join("_delta_log/").unwrap();
         let log_segment =

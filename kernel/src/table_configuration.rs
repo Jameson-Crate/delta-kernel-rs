@@ -267,17 +267,40 @@ fn build_stats_schema_for_columns(
 fn validate_partition_columns(
     metadata: &Metadata,
     logical_schema: &StructType,
-) -> KernelResult<()> {
+) -> crate::Result<()> {
     let mut seen = HashSet::new();
     for col in metadata.partition_columns() {
         if !seen.insert(col) {
-            return Err(KernelError::generic(format!(
+            let mut seen = HashSet::new();
+            let mut reported = HashSet::new();
+            let duplicates: Vec<_> = metadata
+                .partition_columns()
+                .iter()
+                .filter(|name| !seen.insert(*name) && reported.insert(*name))
+                .map(|name| name.as_str())
+                .collect();
+            return Err(crate::DeltaError::delta_duplicate_partition_columns(
+                duplicates.join(", "),
+            )
+            .with_source(KernelError::generic(format!(
                 "Duplicate partition column: '{col}'"
-            )));
+            )))
+            .into());
         }
         require!(
             logical_schema.field(col).is_some(),
-            KernelError::generic(format!("Partition column '{col}' not found in schema"))
+            crate::DeltaError::delta_partition_column_not_found(
+                col,
+                logical_schema
+                    .fields()
+                    .map(|field| field.name().as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            )
+            .with_source(KernelError::generic(format!(
+                "Partition column '{col}' not found in schema"
+            )))
+            .into()
         );
     }
     Ok(())
@@ -340,7 +363,7 @@ impl TableConfiguration {
         protocol: Protocol,
         table_root: Url,
         version: Version,
-    ) -> KernelResult<Self> {
+    ) -> crate::Result<Self> {
         let logical_schema = Arc::new(metadata.parse_schema()?);
         Self::try_new_inner(metadata, protocol, table_root, version, logical_schema)
     }
@@ -351,7 +374,7 @@ impl TableConfiguration {
         base: &Self,
         metadata: Metadata,
         logical_schema: SchemaRef,
-    ) -> KernelResult<Self> {
+    ) -> crate::Result<Self> {
         Self::try_new_inner(
             metadata,
             base.protocol.clone(),
@@ -367,8 +390,30 @@ impl TableConfiguration {
         table_root: Url,
         version: Version,
         logical_schema: SchemaRef,
-    ) -> KernelResult<Self> {
+    ) -> crate::Result<Self> {
         let table_properties = metadata.parse_table_properties();
+        if protocol.has_table_feature(&TableFeature::AdaptiveMetadataPreview) {
+            if let Some(mode) = metadata
+                .configuration()
+                .get(crate::table_properties::COLUMN_MAPPING_MODE)
+                .filter(|_| {
+                    matches!(
+                        table_properties.column_mapping_mode,
+                        Some(ColumnMappingMode::None | ColumnMappingMode::Name)
+                    )
+                })
+            {
+                return Err(
+                    crate::DeltaError::delta_adaptive_metadata_requires_column_mapping_id_mode(
+                        mode,
+                    )
+                    .with_source(KernelError::invalid_protocol(
+                        "Feature 'adaptiveMetadata-preview' requires column mapping in 'id' mode",
+                    ))
+                    .into(),
+                );
+            }
+        }
         let column_mapping_mode = column_mapping_mode(&protocol, &table_properties);
 
         let physical_schema = Arc::new(logical_schema.make_physical(column_mapping_mode)?);
@@ -420,9 +465,9 @@ impl TableConfiguration {
         require!(
             !(table_config.table_properties.enable_row_tracking == Some(true)
                 && table_config.is_row_tracking_suspended()),
-            KernelError::invalid_protocol(
+            crate::Error::Kernel(KernelError::invalid_protocol(
                 "Row tracking cannot be enabled and suspended at the same time"
-            )
+            ))
         );
 
         // Validate schema against protocol features now that we have a TC instance.
@@ -455,7 +500,7 @@ impl TableConfiguration {
         new_metadata: Option<Metadata>,
         new_protocol: Option<Protocol>,
         new_version: Version,
-    ) -> KernelResult<Self> {
+    ) -> crate::Result<Self> {
         // simplest case: no new P/M, just return the existing table configuration with new version
         if new_metadata.is_none() && new_protocol.is_none() {
             return Ok(Self {
@@ -495,7 +540,7 @@ impl TableConfiguration {
         new_version: Version,
         new_metadata: Option<Metadata>,
         new_protocol: Option<Protocol>,
-    ) -> KernelResult<Self> {
+    ) -> crate::Result<Self> {
         Self::try_new_from(table_configuration, new_metadata, new_protocol, new_version)
     }
 
@@ -975,9 +1020,6 @@ impl TableConfiguration {
                         ))
                     );
                 }
-                FeatureRequirement::Custom(check) => {
-                    check(&self.protocol, &self.table_properties)?;
-                }
             }
         }
         Ok(())
@@ -1336,14 +1378,35 @@ mod test {
         assert_result_error_with_message(StatsOutputSchemas::try_new(logical, physical), error);
     }
 
-    #[test]
-    fn table_configuration_rejects_partition_column_missing_from_schema() {
+    #[rstest]
+    #[case::missing("absent")]
+    #[case::case_sensitive("PART")]
+    fn table_configuration_reports_missing_logical_partition_column(#[case] missing: &str) {
         let result = MockTableConfigurationBuilder::new()
-            .with_partition_columns(["missing"])
+            .with_schema(schema! {
+                nullable "value": INTEGER,
+                nullable "part": STRING,
+            })
+            .with_partition_columns([missing])
             .with_protocol(MockProtocolBuilder::new().with_versions(1, 2).build())
             .try_build();
-
-        assert_result_error_with_message(result, "Partition column 'missing' not found in schema");
+        let crate::Error::Delta(error) = result.unwrap_err() else {
+            panic!("expected missing partition column");
+        };
+        assert_eq!(
+            error.condition(),
+            crate::DeltaErrorCondition::DeltaPartitionColumnNotFound
+        );
+        assert_eq!(error.sql_state(), Some("42703"));
+        assert_eq!(
+            error
+                .parameters()
+                .iter()
+                .map(|parameter| (parameter.name(), parameter.value()))
+                .collect::<Vec<_>>(),
+            [("columnName", missing), ("schemaMap", "value, part")]
+        );
+        assert!(std::error::Error::source(&error).is_some());
     }
 
     #[derive(Debug, PartialEq)]
@@ -1459,18 +1522,33 @@ mod test {
         assert_eq!(has_check_constraints, expected);
     }
 
-    #[test]
-    fn table_configuration_rejects_duplicate_partition_columns() {
+    #[rstest]
+    #[case::one_duplicate(vec!["part", "part"], "part")]
+    #[case::multiple_duplicates(vec!["value", "part", "value", "part", "part"], "value, part")]
+    fn table_configuration_rejects_duplicate_partition_columns(
+        #[case] columns: Vec<&str>,
+        #[case] expected_duplicates: &str,
+    ) {
         let result = MockTableConfigurationBuilder::new()
             .with_schema(schema! {
                 nullable "value": INTEGER,
                 nullable "part": STRING,
             })
-            .with_partition_columns(["part", "part"])
+            .with_partition_columns(columns)
             .with_protocol(MockProtocolBuilder::new().with_versions(1, 2).build())
             .try_build();
 
-        assert_result_error_with_message(result, "Duplicate partition column: 'part'");
+        let crate::Error::Delta(error) = result.unwrap_err() else {
+            panic!("expected duplicate partition columns");
+        };
+        assert_eq!(
+            error.condition(),
+            crate::DeltaErrorCondition::DeltaDuplicateColumnsFoundPartitionColumns
+        );
+        assert_eq!(error.sql_state(), Some("42711"));
+        assert_eq!(error.parameters()[0].name(), "duplicateCols");
+        assert_eq!(error.parameters()[0].value(), expected_duplicates);
+        assert!(std::error::Error::source(&error).is_some());
     }
 
     #[test]
@@ -3212,12 +3290,12 @@ mod test {
         all_adaptive_metadata_deps(),
         None
     )]
-    // Column mapping enabled but in `name` mode -> the `id`-mode Custom check fires.
+    // An explicitly stored non-id mode is rejected during configuration construction.
     #[case::cm_name_mode_rejected(
         all_adaptive_metadata_props(),
         Some(ColumnMappingMode::Name),
         all_adaptive_metadata_deps(),
-        Some("column mapping in 'id' mode")
+        Some("requires column mapping mode 'id'")
     )]
     // Column mapping feature absent entirely -> the `Enabled(ColumnMapping)` arm fires first.
     #[case::column_mapping_not_supported(
@@ -3287,12 +3365,56 @@ mod test {
                     .with_writer_features(&writer_features)
                     .build(),
             )
-            .build();
-        let result = config.validate_feature_requirements(&TableFeature::AdaptiveMetadataPreview);
+            .try_build();
+        let result = config.and_then(|config| {
+            config
+                .validate_feature_requirements(&TableFeature::AdaptiveMetadataPreview)
+                .map_err(crate::Error::Kernel)
+        });
         match expected_error_substring {
             Some(msg) => assert_result_error_with_message(result, msg),
             None => assert!(result.is_ok(), "expected Ok, got {result:?}"),
         }
+    }
+
+    #[rstest]
+    #[case::name("name")]
+    #[case::none("none")]
+    fn adaptive_metadata_explicit_non_id_mode_returns_delta_error(#[case] mode: &str) {
+        let error = MockTableConfigurationBuilder::new()
+            .with_column_mapping(mode.parse::<ColumnMappingMode>().unwrap())
+            .with_protocol(
+                MockProtocolBuilder::new()
+                    .with_features([
+                        TableFeature::AdaptiveMetadataPreview,
+                        TableFeature::ColumnMapping,
+                    ])
+                    .build(),
+            )
+            .try_build()
+            .unwrap_err();
+        let crate::Error::Delta(error) = error else {
+            panic!("expected adaptive-metadata mode error, got {error:?}");
+        };
+        assert_eq!(
+            error.condition(),
+            crate::DeltaErrorCondition::DeltaAdaptiveMetadataRequiresColumnMappingIdMode
+        );
+        assert_eq!(error.sql_state(), Some("42000"));
+        let parameters: Vec<_> = error
+            .parameters()
+            .iter()
+            .map(|p| (p.name(), p.value()))
+            .collect();
+        assert_eq!(
+            parameters,
+            vec![
+                ("feature", "adaptiveMetadata-preview"),
+                ("prop", "delta.columnMapping.mode"),
+                ("mode", mode)
+            ]
+        );
+        assert!(std::error::Error::source(&error).is_some());
     }
 
     /// The table properties that enable adaptiveMetadata-preview's property-gated dependencies.

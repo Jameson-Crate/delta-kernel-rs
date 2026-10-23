@@ -105,10 +105,11 @@ pub const DEFAULT_SWEEP_MID_VERSION: u64 = 5;
 /// A multi-threaded runtime is required so kernel operations that call
 /// `block_in_place` (e.g. `Snapshot::checkpoint`) do not deadlock, which is why
 /// the sync wrappers in this module all route through this helper.
-fn block_on_sync<F, Fut, T>(make_fut: F) -> KernelResult<T>
+fn block_on_sync<F, Fut, T, E>(make_fut: F) -> std::result::Result<T, E>
 where
     F: FnOnce() -> Fut + Send,
-    Fut: std::future::Future<Output = KernelResult<T>>,
+    Fut: std::future::Future<Output = std::result::Result<T, E>>,
+    E: From<delta_kernel::KernelError> + Send,
     T: Send,
 {
     std::thread::scope(|s| {
@@ -1261,12 +1262,12 @@ impl TestTableBuilder {
     /// # Panics
     /// Panics if [`LastCheckpointHintState::Stale`] is paired with fewer than two
     /// checkpoints.
-    pub fn build(self) -> KernelResult<TestTable> {
+    pub fn build(self) -> delta_kernel::Result<TestTable> {
         validate_log_state(&self.log_state);
         block_on_sync(|| self.build_async())
     }
 
-    async fn build_async(self) -> KernelResult<TestTable> {
+    async fn build_async(self) -> delta_kernel::Result<TestTable> {
         let store: Arc<DynObjectStore> = Arc::new(InMemory::new());
         let table_root = "memory:///";
         let executor = Arc::new(TokioMultiThreadExecutor::new(
@@ -1370,7 +1371,11 @@ impl TestTableBuilder {
             LastCheckpointHintState::Present => {}
             LastCheckpointHintState::Missing => match store.delete(&resolved_hint_path).await {
                 Ok(()) | Err(ObjectStoreError::NotFound { .. }) => {}
-                Err(e) => return Err(delta_kernel::KernelError::from(e)),
+                Err(e) => {
+                    return Err(delta_kernel::Error::Kernel(
+                        delta_kernel::KernelError::from(e),
+                    ))
+                }
             },
             LastCheckpointHintState::Stale => {
                 // Restore the hint bytes captured after the lowest checkpoint write.
@@ -1448,7 +1453,7 @@ async fn write_data_commit<E: TaskExecutor>(
     rows_per_file: usize,
     partition_columns: &[String],
     version: u64,
-) -> KernelResult<delta_kernel::transaction::CommitResult> {
+) -> delta_kernel::Result<delta_kernel::transaction::CommitResult> {
     let logical_schema = snapshot.schema().clone();
     let arrow_schema: ArrowSchema = TryFromKernel::try_from_kernel(logical_schema.as_ref())
         .map_err(|e| delta_kernel::KernelError::generic(e.to_string()))?;
@@ -1899,7 +1904,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_basic_build() -> KernelResult<()> {
+    fn test_basic_build() -> delta_kernel::Result<()> {
         let table = TestTableBuilder::new().build()?;
         let engine = table.engine();
         let snap = Snapshot::builder_for(table.table_root()).build(&engine)?;
@@ -1908,7 +1913,7 @@ mod tests {
     }
 
     #[test]
-    fn test_commits_only() -> KernelResult<()> {
+    fn test_commits_only() -> delta_kernel::Result<()> {
         let table = TestTableBuilder::new()
             .with_log_state(LogState::with_latest_version(2))
             .build()?;
@@ -1954,7 +1959,9 @@ mod tests {
     }
 
     #[rstest_reuse::apply(feature_sets)]
-    fn test_feature_sets_enable_table_features(feature_set: FeatureSet) -> KernelResult<()> {
+    fn test_feature_sets_enable_table_features(
+        feature_set: FeatureSet,
+    ) -> delta_kernel::Result<()> {
         let expected_features = feature_set.expected_features();
         let table = TestTableBuilder::new().with_features(feature_set).build()?;
         let engine = table.engine();
@@ -1979,7 +1986,7 @@ mod tests {
     }
 
     #[test]
-    fn test_table_config_properties_applied() -> KernelResult<()> {
+    fn test_table_config_properties_applied() -> delta_kernel::Result<()> {
         let table = TestTableBuilder::new()
             .with_table_config(
                 TableConfig::new()
@@ -1994,7 +2001,7 @@ mod tests {
     }
 
     #[test]
-    fn test_data_skipping_table_properties_in_metadata() -> KernelResult<()> {
+    fn test_data_skipping_table_properties_in_metadata() -> delta_kernel::Result<()> {
         let table = TestTableBuilder::new()
             .with_table_config(
                 TableConfig::new()
@@ -2032,7 +2039,7 @@ mod tests {
 
     /// Verifies every common table config builds successfully.
     #[rstest_reuse::apply(table_configs)]
-    fn test_all_table_configs_build(table_config: TableConfig) -> KernelResult<()> {
+    fn test_all_table_configs_build(table_config: TableConfig) -> delta_kernel::Result<()> {
         TestTableBuilder::new()
             .with_table_config(table_config)
             .build()?;
@@ -2045,7 +2052,9 @@ mod tests {
     #[rstest::rstest]
     #[case::default_hint(None)]
     #[case::explicit_hint(Some(1))]
-    fn test_v2_sidecars_emit_sidecar_files(#[case] hint: Option<usize>) -> KernelResult<()> {
+    fn test_v2_sidecars_emit_sidecar_files(
+        #[case] hint: Option<usize>,
+    ) -> delta_kernel::Result<()> {
         let log_state = LogState::with_latest_version(2)
             .with_checkpoint_at([1])
             .with_sidecars_if_enabled(hint);
@@ -2065,7 +2074,7 @@ mod tests {
     /// `with_sidecars_if_enabled` without the `v2Checkpoint` feature is a no-op:
     /// the table builds (no error) and no sidecar directory is produced.
     #[test]
-    fn test_v2_sidecars_silently_ignored_without_v2_feature() -> KernelResult<()> {
+    fn test_v2_sidecars_silently_ignored_without_v2_feature() -> delta_kernel::Result<()> {
         let log_state = LogState::with_latest_version(2)
             .with_checkpoint_at([1])
             .with_sidecars_if_enabled(None);
@@ -2082,7 +2091,7 @@ mod tests {
     }
 
     #[test]
-    fn test_checkpoint_and_commits() -> KernelResult<()> {
+    fn test_checkpoint_and_commits() -> delta_kernel::Result<()> {
         let log_state = LogState::with_latest_version(4).with_checkpoint_at([2]);
         let table = TestTableBuilder::new()
             .with_log_state(log_state.clone())
@@ -2157,7 +2166,7 @@ mod tests {
     )]
     fn test_log_state_checkpoint_shapes_land_on_disk(
         #[case] log_state: LogState,
-    ) -> KernelResult<()> {
+    ) -> delta_kernel::Result<()> {
         let expected_version = log_state.latest_version();
         let table = TestTableBuilder::new()
             .with_log_state(log_state.clone())
@@ -2189,7 +2198,7 @@ mod tests {
     /// forward, and pick up the actual latest checkpoint at the higher version --
     /// not the stale-hinted older one.
     #[test]
-    fn test_stale_hint_recovery_resolves_to_actual_latest_checkpoint() -> KernelResult<()> {
+    fn test_stale_hint_recovery_resolves_to_actual_latest_checkpoint() -> delta_kernel::Result<()> {
         let log_state = LogState::with_latest_version(5)
             .with_checkpoint_at([2, 4])
             .with_last_checkpoint_hint(LastCheckpointHintState::Stale);
@@ -2204,7 +2213,7 @@ mod tests {
     }
 
     #[test]
-    fn test_scan_with_column_mapping() -> KernelResult<()> {
+    fn test_scan_with_column_mapping() -> delta_kernel::Result<()> {
         let table = TestTableBuilder::new()
             .with_log_state(LogState::with_latest_version(1))
             .with_features(FeatureSet::new().column_mapping("name"))
@@ -2221,7 +2230,7 @@ mod tests {
     }
 
     #[test]
-    fn test_scan_with_data() -> KernelResult<()> {
+    fn test_scan_with_data() -> delta_kernel::Result<()> {
         let table = TestTableBuilder::new()
             .with_log_state(LogState::with_latest_version(1))
             .with_data(2, 5)
@@ -2240,7 +2249,7 @@ mod tests {
     /// Uses `rows_per_file = NULL_RATE_EVERY_NTH * 3` so each file has exactly three null
     /// rows per column.
     #[test]
-    fn test_sparse_null_injection_in_generated_data() -> KernelResult<()> {
+    fn test_sparse_null_injection_in_generated_data() -> delta_kernel::Result<()> {
         let rows_per_file = NULL_RATE_EVERY_NTH * 3;
         let table = TestTableBuilder::new()
             .with_log_state(LogState::with_latest_version(1))
@@ -2276,7 +2285,9 @@ mod tests {
     #[rstest::rstest]
     #[case::partitioned(partitioned())]
     #[case::clustered(clustered())]
-    fn test_layout_column_null_injection(#[case] config: DataLayoutConfig) -> KernelResult<()> {
+    fn test_layout_column_null_injection(
+        #[case] config: DataLayoutConfig,
+    ) -> delta_kernel::Result<()> {
         let rows_per_file = NULL_RATE_EVERY_NTH * 3;
         // Only partition columns are protected from nulling; clustering columns are not.
         let protected_columns = if config.is_partitioned() {
@@ -2323,7 +2334,7 @@ mod tests {
     fn test_data_layout_table(
         #[case] config: DataLayoutConfig,
         #[case] expected_schema: SchemaRef,
-    ) -> KernelResult<()> {
+    ) -> delta_kernel::Result<()> {
         // 2 versions means v0 (create_table) + v1 (1 data commit with 10 rows)
         let table = TestTableBuilder::new()
             .with_log_state(LogState::with_latest_version(1))
@@ -2343,7 +2354,7 @@ mod tests {
     }
 
     #[test]
-    fn test_clustered_table_multiple_versions() -> KernelResult<()> {
+    fn test_clustered_table_multiple_versions() -> delta_kernel::Result<()> {
         // v0=create, v1-v3=data commits, 10 rows each
         let table = TestTableBuilder::new()
             .with_log_state(LogState::with_latest_version(3))
@@ -2363,7 +2374,7 @@ mod tests {
     }
 
     #[test]
-    fn test_with_clustering_columns_directly() -> KernelResult<()> {
+    fn test_with_clustering_columns_directly() -> delta_kernel::Result<()> {
         let table = TestTableBuilder::new()
             .with_log_state(LogState::with_latest_version(1))
             .with_schema(clustered_schema())
@@ -2377,7 +2388,7 @@ mod tests {
     }
 
     #[test]
-    fn test_nested_struct_schema_round_trip() -> KernelResult<()> {
+    fn test_nested_struct_schema_round_trip() -> delta_kernel::Result<()> {
         let schema = schema_ref! {
             nullable "id": LONG,
             nullable "inner": {
@@ -2421,7 +2432,7 @@ mod tests {
     fn test_builder_writes_crc_with_correct_content(
         #[case] features: FeatureSet,
         #[case] expect_ict: bool,
-    ) -> KernelResult<()> {
+    ) -> delta_kernel::Result<()> {
         let log_state = LogState::with_latest_version(2)
             .with_checkpoint_at([2])
             .with_crc_at([2]);
@@ -2462,7 +2473,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cleanup_commits_before_deletes_old_files_and_rebuilds() -> KernelResult<()> {
+    fn test_cleanup_commits_before_deletes_old_files_and_rebuilds() -> delta_kernel::Result<()> {
         // Checkpoints at v=1 (below cutoff), v=3 (at cutoff), v=5 (above cutoff)
         // exercise both the deletion and preservation paths for checkpoint files.
         let log_state = LogState::with_latest_version(5)

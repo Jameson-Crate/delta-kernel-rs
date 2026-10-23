@@ -40,8 +40,8 @@ use crate::EngineData;
 #[cfg(feature = "declarative-plans")]
 use crate::Scalar;
 use crate::{
-    Engine, FileMeta, KernelError, KernelResult, Predicate, PredicateRef, RowVisitor,
-    StorageHandler, Version,
+    DeltaError, Engine, Error, FileMeta, KernelError, KernelResult, Predicate, PredicateRef,
+    RowVisitor, StorageHandler, Version,
 };
 
 mod crc_replay;
@@ -164,6 +164,45 @@ pub(crate) fn validate_catalog_managed_log_tail(
         has_staged_commits,
         log_tail.last().map(|path| path.version),
     )
+}
+
+/// Validates a snapshot's catalog tail, reporting genuine gaps separately from invalid ordering
+/// and catalog bounds. Generic range discovery retains its kernel-error contract.
+pub(crate) fn validate_snapshot_log_tail(
+    requested: Option<Version>,
+    maximum: Option<Version>,
+    tail: &[ParsedLogPath],
+) -> crate::Result<()> {
+    validate_catalog_managed_log_tail(requested, maximum, tail).map_err(|error| {
+        let bounds_valid = validate_catalog_managed_versions(
+            requested,
+            maximum,
+            tail.iter()
+                .any(|path| path.file_type == LogPathFileType::StagedCommit),
+            tail.last().map(|path| path.version),
+        )
+        .is_ok();
+        if matches!(
+            error.without_backtrace(),
+            KernelError::LogTailVersionsNotContiguous { .. }
+        ) && bounds_valid
+            && tail
+                .windows(2)
+                .all(|pair| pair[0].version < pair[1].version)
+        {
+            if let (Some(first), Some(last)) = (tail.first(), tail.last()) {
+                return DeltaError::delta_versions_not_contiguous(
+                    tail.iter().map(|path| path.version).join(", "),
+                    first.version,
+                    last.version,
+                    requested.or(maximum).unwrap_or(last.version),
+                )
+                .with_source(error)
+                .into();
+            }
+        }
+        Error::Kernel(error)
+    })
 }
 
 /// Validate catalog version bounds against the staged commits available to the caller.
@@ -345,6 +384,72 @@ impl LogSegment {
         Ok(log_segment)
     }
 
+    /// Assembles snapshot history, distinguishing internal version gaps from missing files after
+    /// a known checkpoint. `replay_checkpoint` supplies the retained incremental checkpoint.
+    pub(crate) fn try_new_for_snapshot(
+        listed: LogSegmentFiles,
+        log_root: Url,
+        target: Option<Version>,
+        hint: Option<LastCheckpointHint>,
+        replay_checkpoint: Option<Version>,
+    ) -> crate::Result<Self> {
+        let checkpoint = listed
+            .checkpoint_parts
+            .first()
+            .map(|path| path.version)
+            .or(replay_checkpoint);
+        let latest = listed
+            .ascending_commit_files
+            .last()
+            .map(|path| path.version)
+            .max(listed.checkpoint_parts.first().map(|path| path.version));
+        let version = target.or(latest);
+        let commits = listed
+            .ascending_commit_files
+            .iter()
+            .filter(|path| checkpoint.is_none_or(|v| path.version > v));
+        let gap = commits
+            .clone()
+            .tuple_windows()
+            .any(|(first, second)| {
+                first
+                    .version
+                    .checked_add(1)
+                    .is_some_and(|next| next < second.version)
+            })
+            .then(|| {
+                let versions = commits.map(|path| path.version).collect_vec();
+                match (versions.first(), versions.last(), version) {
+                    (Some(first), Some(last), Some(target)) => {
+                        Some(DeltaError::delta_versions_not_contiguous(
+                            versions.iter().join(", "),
+                            *first,
+                            *last,
+                            target,
+                        ))
+                    }
+                    _ => None,
+                }
+            })
+            .flatten();
+        let missing_after_checkpoint = checkpoint.and_then(|v| v.checked_add(1));
+        let missing_at_end = latest.and_then(|v| v.checked_add(1));
+        Self::try_new(listed, log_root.clone(), target, hint).map_err(|error| {
+            match (error.without_backtrace(), checkpoint, version, gap) {
+                (KernelError::MissingVersion(missing), Some(checkpoint), Some(version), _)
+                    if Some(*missing) == missing_after_checkpoint
+                        || (target > latest && Some(*missing) == missing_at_end) =>
+                {
+                    DeltaError::delta_log_file_not_found(version, checkpoint, &log_root)
+                        .with_source(error)
+                        .into()
+                }
+                (KernelError::MissingVersion(_), _, _, Some(gap)) => gap.with_source(error).into(),
+                _ => Error::Kernel(error),
+            }
+        })
+    }
+
     /// Returns the checkpoint version from the `_last_checkpoint` hint
     pub(crate) fn last_checkpoint_version(&self) -> Option<Version> {
         self.last_checkpoint_metadata.as_ref().map(|m| m.version)
@@ -452,7 +557,7 @@ impl LogSegment {
         time_travel_version: impl Into<Option<Version>>,
         metric_context: SnapshotLoadMetricContext,
         cancellation_token: Option<&CancellationTokenRef>,
-    ) -> KernelResult<Self> {
+    ) -> crate::Result<Self> {
         let time_travel_version = time_travel_version.into();
         let start = std::time::Instant::now();
         let build = || {
@@ -493,7 +598,7 @@ impl LogSegment {
         checkpoint_hint: Option<LastCheckpointHint>,
         time_travel_version: Option<Version>,
         cancellation_token: Option<&CancellationTokenRef>,
-    ) -> KernelResult<Self> {
+    ) -> crate::Result<Self> {
         // The end_version is the time_travel_version, if present
         // TODO: When max catalog version is implemented, we would use that as end_version if
         // time_travel_version is not present
@@ -540,7 +645,13 @@ impl LogSegment {
             }
         };
 
-        LogSegment::try_new(listed_files, log_root, time_travel_version, checkpoint_hint)
+        Self::try_new_for_snapshot(
+            listed_files,
+            log_root,
+            time_travel_version,
+            checkpoint_hint,
+            None,
+        )
     }
 
     /// Constructs a [`LogSegment`] to be used for `TableChanges`. For a TableChanges between

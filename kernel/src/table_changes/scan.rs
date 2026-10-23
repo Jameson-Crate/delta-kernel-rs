@@ -160,7 +160,7 @@ impl TableChangesScan {
     fn scan_metadata(
         &self,
         engine: Arc<dyn Engine>,
-    ) -> KernelResult<impl Iterator<Item = KernelResult<TableChangesScanMetadata>>> {
+    ) -> crate::Result<impl Iterator<Item = crate::Result<TableChangesScanMetadata>>> {
         let commits = self
             .table_changes
             .log_segment
@@ -217,7 +217,7 @@ impl TableChangesScan {
     pub fn execute(
         &self,
         engine: Arc<dyn Engine>,
-    ) -> KernelResult<impl Iterator<Item = KernelResult<Box<dyn EngineData>>>> {
+    ) -> crate::Result<impl Iterator<Item = crate::Result<Box<dyn EngineData>>>> {
         let scan_metadata = self.scan_metadata(engine.clone())?;
         let scan_files = scan_metadata_to_scan_file(scan_metadata);
 
@@ -229,21 +229,25 @@ impl TableChangesScan {
         let physical_predicate = self.physical_predicate().clone();
 
         let result = scan_files
-            .map(move |scan_file| {
-                resolve_scan_file_dv(dv_engine_ref.as_ref(), &table_root, scan_file?)
+            .map(move |scan_file| -> crate::Result<_> {
+                Ok(resolve_scan_file_dv(
+                    dv_engine_ref.as_ref(),
+                    &table_root,
+                    scan_file?,
+                )?)
             }) // Iterator-Result-Iterator
             .flatten_ok() // Iterator-Result
-            .map(move |resolved_scan_file| -> KernelResult<_> {
-                read_scan_file(
+            .map(move |resolved_scan_file| -> crate::Result<_> {
+                Ok(read_scan_file(
                     engine.as_ref(),
                     resolved_scan_file?,
                     &table_root_copy,
                     state_info.as_ref(),
                     physical_predicate.clone(),
-                )
+                )?)
             }) // Iterator-Result-Iterator-Result
             .flatten_ok() // Iterator-Result-Result
-            .map(|x| x?); // Iterator-Result
+            .map(|x| Ok(x??)); // Iterator-Result
 
         Ok(result)
     }

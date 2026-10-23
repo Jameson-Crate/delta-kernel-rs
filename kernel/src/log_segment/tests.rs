@@ -1,7 +1,9 @@
+use std::error::Error as _;
 use std::sync::{Arc, LazyLock};
 
 use itertools::Itertools;
 use rstest::rstest;
+use test_utils::table_builder::{LogState, TestTableBuilder};
 use test_utils::{
     compacted_log_path_for_versions, delta_path_for_version, staged_commit_path_for_version,
 };
@@ -5435,7 +5437,7 @@ fn new_for_version_zero_rejects_non_commit_file() {
 }
 
 #[test]
-fn test_commit_phase_processes_commits() -> KernelResult<()> {
+fn test_commit_phase_processes_commits() -> delta_kernel::Result<()> {
     let (engine, snapshot, _tempdir) = load_test_table("app-txn-no-checkpoint")?;
     let log_segment = snapshot.log_segment();
 
@@ -5482,7 +5484,7 @@ fn test_commit_phase_processes_commits() -> KernelResult<()> {
 
 #[cfg(feature = "adaptive-metadata-in-dev")]
 #[test]
-fn latest_checkpoint_action_returns_none_without_checkpoint() -> KernelResult<()> {
+fn latest_checkpoint_action_returns_none_without_checkpoint() -> delta_kernel::Result<()> {
     let (engine, table_root) = setup_table()?;
     let snapshot = Snapshot::builder_for(table_root).build(&engine)?;
     assert!(snapshot.latest_checkpoint_action(&engine)?.is_none());
@@ -5492,7 +5494,7 @@ fn latest_checkpoint_action_returns_none_without_checkpoint() -> KernelResult<()
 // The log is replayed newest-first, so the most recent `checkpoint` action wins.
 #[cfg(feature = "adaptive-metadata-in-dev")]
 #[test]
-fn latest_checkpoint_action_returns_the_latest_of_multiple() -> KernelResult<()> {
+fn latest_checkpoint_action_returns_the_latest_of_multiple() -> delta_kernel::Result<()> {
     let (engine, table_root) = setup_table()?;
     write_commit(
         &engine,
@@ -5522,7 +5524,8 @@ fn latest_checkpoint_action_returns_the_latest_of_multiple() -> KernelResult<()>
 // A fresh snapshot does observe it.
 #[cfg(feature = "adaptive-metadata-in-dev")]
 #[test]
-fn latest_checkpoint_action_is_stable_when_newer_checkpoint_written_later() -> KernelResult<()> {
+fn latest_checkpoint_action_is_stable_when_newer_checkpoint_written_later(
+) -> delta_kernel::Result<()> {
     let (engine, table_root) = setup_table()?;
     write_commit(
         &engine,
@@ -5644,7 +5647,7 @@ async fn amt_last_checkpoint_hint_bounds_listing(
 // the protocol and metadata come from the manifest commit's checkpoint action, not commit 0.
 #[cfg(feature = "adaptive-metadata-in-dev")]
 #[test]
-fn snapshot_with_amt_last_checkpoint_hint_skips_earlier_commits() -> KernelResult<()> {
+fn snapshot_with_amt_last_checkpoint_hint_skips_earlier_commits() -> delta_kernel::Result<()> {
     let (engine, table_root) = setup_table()?;
     for version in 1..=2 {
         write_commit(
@@ -5665,7 +5668,9 @@ fn snapshot_with_amt_last_checkpoint_hint_skips_earlier_commits() -> KernelResul
         }),
         ..Default::default()
     };
-    let log_root = table_root.join("_delta_log/")?;
+    let log_root = table_root
+        .join("_delta_log/")
+        .map_err(delta_kernel::KernelError::from)?;
     engine.storage_handler().put(
         &LastCheckpointHint::path(&log_root)?,
         hint.to_json_bytes().into(),
@@ -5681,4 +5686,205 @@ fn snapshot_with_amt_last_checkpoint_hint_skips_earlier_commits() -> KernelResul
         .expect("checkpoint present");
     assert_eq!(checkpoint.path(), "metadata/root-v2.parquet");
     Ok(())
+}
+
+#[rstest]
+#[case::checkpoint_gap(vec![4, 5], None, 5)]
+#[case::missing_target(vec![3], Some(5), 5)]
+#[tokio::test]
+async fn snapshot_missing_history_reports_checkpoint_and_target(
+    #[case] commits: Vec<Version>,
+    #[case] requested: Option<Version>,
+    #[case] target: Version,
+) -> crate::Result<()> {
+    let paths: Vec<_> = std::iter::once(delta_path_for_version(2, "checkpoint.parquet"))
+        .chain(
+            commits
+                .into_iter()
+                .map(|v| delta_path_for_version(v, "json")),
+        )
+        .collect();
+    let (storage, log_root) = build_log_with_paths_and_checkpoint(&paths, None).await;
+    let crate::Error::Delta(error) = LogSegment::for_snapshot_impl(
+        storage.as_ref(),
+        log_root.clone(),
+        vec![],
+        None,
+        requested,
+        None,
+    )
+    .unwrap_err() else {
+        panic!("expected missing snapshot history");
+    };
+    assert_eq!(
+        error.condition(),
+        crate::DeltaErrorCondition::DeltaLogFileNotFound
+    );
+    assert_eq!(error.sql_state(), Some("42K03"));
+    let parameters: Vec<_> = error
+        .parameters()
+        .iter()
+        .map(|p| (p.name(), p.value()))
+        .collect();
+    let target = target.to_string();
+    assert_eq!(
+        parameters,
+        vec![
+            ("version", target.as_str()),
+            ("checkpointVersion", "2"),
+            ("logPath", log_root.as_str())
+        ]
+    );
+    assert!(matches!(
+        error.source().unwrap().downcast_ref::<KernelError>(),
+        Some(KernelError::MissingVersion(_))
+    ));
+    Ok(())
+}
+
+#[cfg(feature = "declarative-plans")]
+#[rstest]
+#[case::missing_commit("00000000000000000001.json", true)]
+#[case::missing_checkpoint("00000000000000000000.checkpoint.parquet", false)]
+fn snapshot_missing_replay_file_preserves_its_classification(
+    #[case] missing_file: &str,
+    #[case] missing_commit: bool,
+    #[values(false, true)] use_plan: bool,
+) -> crate::Result<()> {
+    let table = TestTableBuilder::new()
+        .with_log_state(LogState::with_latest_version(2).with_checkpoint_at([0]))
+        .build()
+        .unwrap();
+    let engine = DelegatingEngine::new(Arc::new(SyncEngine::new_with_store(table.store().clone())));
+    let engine = if use_plan {
+        engine
+    } else {
+        engine.without_plan_executor()
+    };
+    let root = Url::parse(table.table_root()).map_err(KernelError::from)?;
+    let log_root = root.join("_delta_log/").map_err(KernelError::from)?;
+    let segment = LogSegment::for_snapshot_impl(
+        engine.storage_handler().as_ref(),
+        log_root.clone(),
+        vec![],
+        None,
+        None,
+        None,
+    )?;
+    let path = Path::from_url_path(
+        log_root
+            .join(missing_file)
+            .map_err(KernelError::from)?
+            .path(),
+    )
+    .map_err(KernelError::from)?;
+    futures::executor::block_on(table.store().delete(&path)).map_err(KernelError::from)?;
+    let error = segment
+        .read_protocol_metadata_opt(&engine, None)
+        .err()
+        .expect("expected missing replay file");
+    if !missing_commit {
+        assert!(
+            matches!(error, crate::Error::Kernel(error) if matches!(error.without_backtrace(), KernelError::FileNotFound(_)))
+        );
+        return Ok(());
+    }
+    let crate::Error::Delta(error) = error else {
+        panic!("expected missing snapshot commit: {error:?}");
+    };
+    assert_eq!(
+        error.condition(),
+        crate::DeltaErrorCondition::DeltaLogFileNotFound
+    );
+    assert_eq!(error.parameters()[0].value(), "2");
+    assert_eq!(error.parameters()[1].value(), "0");
+    assert_eq!(error.parameters()[2].value(), log_root.as_str());
+    assert!(matches!(
+        error
+            .source()
+            .unwrap()
+            .downcast_ref::<KernelError>()
+            .unwrap()
+            .without_backtrace(),
+        KernelError::FileNotFound(_)
+    ));
+    Ok(())
+}
+
+#[rstest]
+#[case::from_zero(None, vec![0, 1, 3], None, 3)]
+#[case::after_checkpoint(Some(2), vec![3, 4, 6], Some(6), 6)]
+#[tokio::test]
+async fn snapshot_commit_gap_reports_full_versions_and_target(
+    #[case] checkpoint: Option<Version>,
+    #[case] versions: Vec<Version>,
+    #[case] requested: Option<Version>,
+    #[case] target: Version,
+) -> crate::Result<()> {
+    let paths: Vec<_> = checkpoint
+        .into_iter()
+        .map(|v| delta_path_for_version(v, "checkpoint.parquet"))
+        .chain(versions.iter().map(|v| delta_path_for_version(*v, "json")))
+        .collect();
+    let (storage, log_root) = build_log_with_paths_and_checkpoint(&paths, None).await;
+    let crate::Error::Delta(error) =
+        LogSegment::for_snapshot_impl(storage.as_ref(), log_root, vec![], None, requested, None)
+            .unwrap_err()
+    else {
+        panic!("expected a snapshot history gap");
+    };
+    assert_eq!(
+        error.condition(),
+        crate::DeltaErrorCondition::DeltaVersionsNotContiguous
+    );
+    assert_eq!(error.sql_state(), Some("KD00C"));
+    assert_eq!(error.parameters()[0].value(), versions.iter().join(", "));
+    assert_eq!(
+        error.parameters()[1].value(),
+        versions.first().unwrap().to_string()
+    );
+    assert_eq!(
+        error.parameters()[2].value(),
+        versions.last().unwrap().to_string()
+    );
+    assert_eq!(error.parameters()[3].value(), target.to_string());
+    assert!(matches!(
+        error.source().unwrap().downcast_ref::<KernelError>(),
+        Some(KernelError::MissingVersion(_))
+    ));
+    Ok(())
+}
+
+#[rstest]
+#[case::gap(vec![1, 3], true)]
+#[case::duplicate(vec![1, 1], false)]
+#[case::reversed(vec![3, 1], false)]
+#[case::gap_then_reversed(vec![1, 3, 2], false)]
+fn snapshot_catalog_tail_classifies_only_ordered_gaps(
+    #[case] versions: Vec<Version>,
+    #[case] delta: bool,
+) {
+    let tail = staged_commit_log_paths(&versions);
+    let maximum = versions.iter().max().copied();
+    let error = validate_snapshot_log_tail(None, maximum, &tail).unwrap_err();
+    if delta {
+        let crate::Error::Delta(error) = error else {
+            panic!("expected a catalog gap");
+        };
+        assert_eq!(
+            error.condition(),
+            crate::DeltaErrorCondition::DeltaVersionsNotContiguous
+        );
+        assert_eq!(error.parameters()[0].value(), "1, 3");
+        assert_eq!(error.parameters()[3].value(), "3");
+    } else {
+        assert!(matches!(
+            error,
+            crate::Error::Kernel(KernelError::LogTailVersionsNotContiguous { .. })
+        ));
+    }
+    assert!(matches!(
+        validate_catalog_managed_log_tail(None, maximum, &tail),
+        Err(KernelError::LogTailVersionsNotContiguous { .. })
+    ));
 }

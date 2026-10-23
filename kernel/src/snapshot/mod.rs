@@ -313,7 +313,7 @@ impl Snapshot {
         metric_context: SnapshotLoadMetricContext,
         incremental_replay: IncrementalReplay,
         built_as_latest: bool,
-    ) -> KernelResult<Self> {
+    ) -> crate::Result<Self> {
         let PreparedSnapshot {
             table_configuration,
             crc,
@@ -347,7 +347,7 @@ impl Snapshot {
         metric_context: &SnapshotLoadMetricContext,
         incremental_replay: IncrementalReplay,
         built_as_latest: bool,
-    ) -> KernelResult<PreparedSnapshot> {
+    ) -> crate::Result<PreparedSnapshot> {
         Self::resolve_table_configuration_and_crc(
             location,
             log_segment,
@@ -374,7 +374,7 @@ impl Snapshot {
         engine: &dyn Engine,
         metric_context: &SnapshotLoadMetricContext,
         incremental_replay: IncrementalReplay,
-    ) -> KernelResult<PreparedSnapshot> {
+    ) -> crate::Result<PreparedSnapshot> {
         let pm_start = std::time::Instant::now();
 
         // Step 1: read the latest on-disk CRC and, if usable, advance it to the end version
@@ -401,9 +401,9 @@ impl Snapshot {
         };
 
         // Fresh snapshot creation requires both Protocol and Metadata to be present.
-        let fail = |e| {
+        let fail = |e: KernelError| {
             emit_protocol_metadata_load_failure(metric_context);
-            Err(e)
+            Err(e.into())
         };
         let (metadata, protocol) = match (metadata, protocol) {
             (Some(metadata), Some(protocol)) => (metadata, protocol),
@@ -445,23 +445,23 @@ impl Snapshot {
         &self,
         commit: ParsedLogPath,
         crc_delta: CrcDelta,
-    ) -> KernelResult<Self> {
+    ) -> crate::Result<Self> {
         require!(
             commit.is_commit(),
-            KernelError::internal_error(format!(
+            crate::Error::Kernel(KernelError::internal_error(format!(
                 "Cannot create post-commit Snapshot. Log file is not a commit file. \
                 Path: {}, Type: {:?}.",
                 commit.location.location, commit.file_type
-            ))
+            )))
         );
         let read_version = self.version();
         let new_version = commit.version;
         require!(
             new_version == read_version.wrapping_add(1),
-            KernelError::internal_error(format!(
+            crate::Error::Kernel(KernelError::internal_error(format!(
                 "Cannot create post-commit Snapshot. Log file version ({new_version}) does not \
                 equal Snapshot version ({read_version}) + 1."
-            ))
+            )))
         );
 
         let new_table_configuration = TableConfiguration::new_post_commit(
@@ -490,6 +490,7 @@ impl Snapshot {
             true, /* built_as_latest */
             self.skipped_new_checkpoints,
         )
+        .map_err(crate::Error::Kernel)
     }
 
     // ============================================================================
@@ -1725,6 +1726,127 @@ mod tests {
         })
     }
 
+    #[rstest]
+    #[case::duplicate(vec!["value", "value"], crate::DeltaErrorCondition::DeltaDuplicateColumnsFoundPartitionColumns, "42711")]
+    #[case::missing(vec!["absent"], crate::DeltaErrorCondition::DeltaPartitionColumnNotFound, "42703")]
+    #[tokio::test]
+    async fn snapshot_rejects_invalid_partition_columns(
+        #[values(false, true)] incremental: bool,
+        #[case] partition_columns: Vec<&str>,
+        #[case] condition: crate::DeltaErrorCondition,
+        #[case] sql_state: &str,
+    ) -> crate::Result<()> {
+        let table_root = "memory:///partition_validation/";
+        let store = Arc::new(InMemory::new());
+        let engine = SyncEngine::new_with_store(store.clone());
+        commit(
+            table_root,
+            store.as_ref(),
+            0,
+            vec![
+                create_protocol(false, None),
+                create_metadata(None, None, None, None, false),
+            ],
+        )
+        .await;
+        let base = Snapshot::builder_for(table_root).build(&engine)?;
+        let mut metadata = create_metadata(None, None, None, None, false);
+        metadata["metaData"]["partitionColumns"] = json!(partition_columns);
+        commit(table_root, store.as_ref(), 1, vec![metadata]).await;
+        let result = if incremental {
+            Snapshot::builder_from(base).build(&engine)
+        } else {
+            Snapshot::builder_for(table_root).build(&engine)
+        };
+        let crate::Error::Delta(error) = result.unwrap_err() else {
+            panic!("expected invalid partition columns");
+        };
+        assert_eq!(error.condition(), condition);
+        assert_eq!(error.sql_state(), Some(sql_state));
+        assert_eq!(error.parameters()[0].value(), partition_columns[0]);
+        if condition == crate::DeltaErrorCondition::DeltaPartitionColumnNotFound {
+            assert_eq!(error.parameters()[1].value(), "value");
+        }
+        assert!(std::error::Error::source(&error).is_some());
+        Ok(())
+    }
+
+    #[rstest]
+    #[case::duplicate_schema(
+        json!({"type": "struct", "fields": [
+            {"name": "Value", "type": "string", "nullable": true, "metadata": {}},
+            {"name": "value", "type": "string", "nullable": true, "metadata": {}}
+        ]}),
+        crate::DeltaErrorCondition::DeltaDuplicateColumnsFoundExistingSchema,
+        "42711",
+        "value"
+    )]
+    #[case::unsupported_primitive(
+        json!("time(6)"),
+        crate::DeltaErrorCondition::DeltaParsingUnsupportedDataType,
+        "KD009", "time(6)"
+    )]
+    #[case::unsupported_complex(
+        json!({"type": "matrix"}),
+        crate::DeltaErrorCondition::DeltaParsingUnsupportedDataType,
+        "KD009", "matrix"
+    )]
+    #[case::unsupported_quoted_token(
+        json!("unknown'type"),
+        crate::DeltaErrorCondition::DeltaParsingUnsupportedDataType,
+        "KD009", "unknown'type"
+    )]
+    #[tokio::test]
+    async fn snapshot_rejects_invalid_schema(
+        #[values(false, true)] incremental: bool,
+        #[values("field", "array", "map_key", "map_value")] container: &str,
+        #[case] field_type: serde_json::Value,
+        #[case] condition: crate::DeltaErrorCondition,
+        #[case] sql_state: &str,
+        #[case] parameter: &str,
+    ) -> crate::Result<()> {
+        let table_root = "memory:///schema_validation/";
+        let store = Arc::new(InMemory::new());
+        let engine = SyncEngine::new_with_store(store.clone());
+        commit(
+            table_root,
+            store.as_ref(),
+            0,
+            vec![
+                create_protocol(false, None),
+                create_metadata(None, None, None, None, false),
+            ],
+        )
+        .await;
+        let base = Snapshot::builder_for(table_root).build(&engine)?;
+        let field_type = match container {
+            "array" => json!({"type": "array", "elementType": field_type, "containsNull": true}),
+            "map_key" => {
+                json!({"type": "map", "keyType": field_type, "valueType": "string", "valueContainsNull": true})
+            }
+            "map_value" => {
+                json!({"type": "map", "keyType": "string", "valueType": field_type, "valueContainsNull": true})
+            }
+            _ => field_type,
+        };
+        let schema = json!({"type": "struct", "fields": [{"name": "outer", "type": field_type, "nullable": true, "metadata": {}}]});
+        let metadata = create_metadata(None, Some(&schema.to_string()), None, None, false);
+        commit(table_root, store.as_ref(), 1, vec![metadata]).await;
+        let result = if incremental {
+            Snapshot::builder_from(base).build(&engine)
+        } else {
+            Snapshot::builder_for(table_root).build(&engine)
+        };
+        let crate::Error::Delta(error) = result.unwrap_err() else {
+            panic!("expected invalid persisted schema");
+        };
+        assert_eq!(error.condition(), condition);
+        assert_eq!(error.sql_state(), Some(sql_state));
+        assert_eq!(error.parameters()[0].value(), parameter);
+        assert!(std::error::Error::source(&error).is_some());
+        Ok(())
+    }
+
     fn create_basic_commit(ict_enabled: bool, ict_config: Option<(String, String)>) -> String {
         let protocol = create_protocol(ict_enabled, None);
         let metadata = create_metadata(None, None, None, ict_config, false);
@@ -1941,7 +2063,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_domain_metadata() -> KernelResult<()> {
+    async fn test_domain_metadata() -> delta_kernel::Result<()> {
         let table_root = "memory:///test_table/";
         let store = Arc::new(InMemory::new());
         let engine = SyncEngine::new_with_store(store.clone());
@@ -2086,7 +2208,7 @@ mod tests {
         #[case] expected: Option<i64>,
         #[case] expected_error: Option<&str>,
         #[case] table_root: &str,
-    ) -> KernelResult<()> {
+    ) -> delta_kernel::Result<()> {
         let store = Arc::new(InMemory::new());
         let engine = SyncEngine::new_with_store(store.clone());
         commit(
@@ -2236,7 +2358,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_timestamp_enablement_version_in_future() -> KernelResult<()> {
+    async fn test_get_timestamp_enablement_version_in_future() -> delta_kernel::Result<()> {
         // Test invalid state where snapshot has enablement version in the future - should error
         let table_root = "memory:///test_table/";
         let store = Arc::new(InMemory::new());
@@ -2287,7 +2409,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_timestamp_missing_ict_when_enabled() -> KernelResult<()> {
+    async fn test_get_timestamp_missing_ict_when_enabled() -> delta_kernel::Result<()> {
         // Test missing ICT when it should be present - should error
         let table_root = "memory:///test_table/";
         let store = Arc::new(InMemory::new());
@@ -2320,11 +2442,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_timestamp_fails_when_commit_missing() -> KernelResult<()> {
+    async fn test_get_timestamp_fails_when_commit_missing() -> delta_kernel::Result<()> {
         // When ICT is enabled but commit file is not found in log segment,
         // get_in_commit_timestamp should return an error
 
-        let url = Url::parse("memory:///")?;
+        let url = Url::parse("memory:///").map_err(KernelError::from)?;
         let store = Arc::new(InMemory::new());
         let engine = SyncEngine::new_with_store(store.clone());
 
@@ -2358,7 +2480,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_timestamp_with_checkpoint_and_commit_same_version() -> KernelResult<()> {
+    async fn test_get_timestamp_with_checkpoint_and_commit_same_version() -> delta_kernel::Result<()>
+    {
         // Test the scenario where both checkpoint and commit exist at the same version with ICT
         // enabled.
         let table_root = "memory:///test_table/";
@@ -2406,12 +2529,16 @@ mod tests {
         let checkpoint: RecordBatch = checkpoint.into();
 
         let mut buffer = vec![];
-        let mut writer = ArrowWriter::try_new(&mut buffer, checkpoint.schema(), None)?;
-        writer.write(&checkpoint)?;
-        writer.close()?;
+        let mut writer = ArrowWriter::try_new(&mut buffer, checkpoint.schema(), None)
+            .map_err(KernelError::from)?;
+        writer.write(&checkpoint).map_err(KernelError::from)?;
+        writer.close().map_err(KernelError::from)?;
 
         let checkpoint_path = delta_path_for_version(1, "checkpoint.parquet");
-        store.put(&checkpoint_path, buffer.into()).await?;
+        store
+            .put(&checkpoint_path, buffer.into())
+            .await
+            .map_err(KernelError::from)?;
 
         // Create 00000000000000000001.json with ICT
         let expected_ict = 1587968586200i64;
@@ -2434,7 +2561,9 @@ mod tests {
     #[rstest]
     #[case::ict_disabled(false)]
     #[case::ict_enabled(true)]
-    fn test_get_timestamp_returns_valid_timestamp(#[case] ict_enabled: bool) -> KernelResult<()> {
+    fn test_get_timestamp_returns_valid_timestamp(
+        #[case] ict_enabled: bool,
+    ) -> delta_kernel::Result<()> {
         let temp_dir = tempfile::tempdir().unwrap();
         let table_path = Url::from_directory_path(temp_dir.path())
             .unwrap()
@@ -2475,8 +2604,8 @@ mod tests {
     #[tokio::test]
     async fn test_get_timestamp_errors_when_commit_file_missing(
         #[case] ict_enabled: bool,
-    ) -> KernelResult<()> {
-        let url = Url::parse("memory:///")?;
+    ) -> delta_kernel::Result<()> {
+        let url = Url::parse("memory:///").map_err(KernelError::from)?;
         let store = Arc::new(InMemory::new());
         let engine = SyncEngine::new_with_store(store.clone());
 
@@ -2521,7 +2650,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_timestamp_preserves_commit_read_error() -> KernelResult<()> {
+    async fn test_get_timestamp_preserves_commit_read_error() -> delta_kernel::Result<()> {
         let table_root = "memory:///";
         let store = Arc::new(InMemory::new());
         let engine = SyncEngine::new_with_store(store.clone());
@@ -2546,7 +2675,10 @@ mod tests {
             false,
             false, /* skipped_new_checkpoints */
         )?;
-        store.delete(&delta_path_for_version(0, "json")).await?;
+        store
+            .delete(&delta_path_for_version(0, "json"))
+            .await
+            .map_err(KernelError::from)?;
 
         let result = snapshot.get_timestamp(&engine);
         assert!(
@@ -2558,7 +2690,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_timestamp_errors_when_ict_missing_from_commit_info() -> KernelResult<()> {
+    async fn test_get_timestamp_errors_when_ict_missing_from_commit_info(
+    ) -> delta_kernel::Result<()> {
         // ICT is enabled and commit file IS present in the log segment, but the commitInfo
         // action does not carry an inCommitTimestamp value (corrupt/incomplete commit).
         let store = Arc::new(InMemory::new());

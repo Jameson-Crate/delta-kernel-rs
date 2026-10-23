@@ -368,7 +368,9 @@ Keep this list updated when new protocol features are added to kernel.
     `DataType::Array(Box::new(ArrayType::new(...)))`.
 - Kernel APIs use `KernelResult<T, E = KernelError>`, which defaults to `KernelError` and permits
   an explicit error type. `Result<T>` is reserved for the top-level `Error` envelope. Wrap kernel
-  errors explicitly with `Error::Kernel` when returning it.
+  errors explicitly with `Error::Kernel` when returning it. Snapshot builds, table-configuration
+  construction, transaction builds/commits, and configuration-validating commit-range/CDF streams
+  propagate `Result` so structured Delta failures reach callers.
 - Prefer `KernelResultIterator<'a, T>` / `KernelResultIteratorStatic<T>` for kernel-error streams,
   including public APIs. `ResultIterator` / `ResultIteratorStatic` yield the top-level `Error`.
 - Prefer the `lit` / `null_lit` constructors over `Expression::literal(...)` / `lit(Scalar::Null(...))`

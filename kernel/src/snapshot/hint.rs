@@ -257,28 +257,31 @@ impl SnapshotHint {
         log_tail: Vec<LogPath>,
         max_catalog_version: Option<Version>,
         incremental_replay: IncrementalReplay,
-    ) -> KernelResult<SnapshotRef> {
-        require!(log_tail.is_empty(), SnapshotHintError::LogTail.into());
+    ) -> crate::Result<SnapshotRef> {
+        require!(
+            log_tail.is_empty(),
+            KernelError::from(SnapshotHintError::LogTail).into()
+        );
         require!(
             incremental_replay.is_disabled(),
-            SnapshotHintError::IncrementalReplay.into()
+            KernelError::from(SnapshotHintError::IncrementalReplay).into()
         );
         if let Some(version) = requested_version {
             require!(
                 version == self.version,
-                SnapshotHintError::VersionMismatch {
+                KernelError::from(SnapshotHintError::VersionMismatch {
                     requested: version,
                     hint: self.version,
-                }
+                })
                 .into()
             );
         } else if let Some(max_catalog_version) = max_catalog_version {
             require!(
                 max_catalog_version == self.version,
-                SnapshotHintError::MaxCatalogVersionMismatch {
+                KernelError::from(SnapshotHintError::MaxCatalogVersionMismatch {
                     max_catalog_version,
                     hint: self.version,
-                }
+                })
                 .into()
             );
         }
@@ -289,7 +292,9 @@ impl SnapshotHint {
             )
         })?;
         let table_url = try_parse_uri(table_root)?;
-        let log_root = table_url.join(DELTA_LOG_DIR_WITH_SLASH)?;
+        let log_root = table_url
+            .join(DELTA_LOG_DIR_WITH_SLASH)
+            .map_err(KernelError::from)?;
         let SnapshotHint {
             version,
             log_segment_files,
@@ -302,10 +307,10 @@ impl SnapshotHint {
         if freshness == SnapshotHintFreshness::Latest {
             require!(
                 max_catalog_version.is_none_or(|max| max <= version),
-                SnapshotHintError::LatestVersionConflict {
+                KernelError::from(SnapshotHintError::LatestVersionConflict {
                     hint: version,
                     max_catalog_version: max_catalog_version.unwrap_or(version),
-                }
+                })
                 .into()
             );
         }
@@ -328,7 +333,7 @@ impl SnapshotHint {
 
         require!(
             log_segment_files.ascending_compaction_files.is_empty(),
-            SnapshotHintError::LogCompaction.into()
+            KernelError::from(SnapshotHintError::LogCompaction).into()
         );
 
         // Construction validates every path against one root, and grouping preserves locations.
@@ -343,7 +348,8 @@ impl SnapshotHint {
         )
         .map_err(|source| SnapshotHintError::LogSegment {
             source: Box::new(source),
-        })?;
+        })
+        .map_err(KernelError::from)?;
         // Regular construction derives this field from storage listing. A hint supplies it, so
         // only the hint path needs to validate it explicitly.
         require!(
@@ -351,7 +357,7 @@ impl SnapshotHint {
                 .listed
                 .max_published_version
                 .is_none_or(|published_version| published_version <= version),
-            SnapshotHintError::MaxPublishedVersion { hint: version }.into()
+            KernelError::from(SnapshotHintError::MaxPublishedVersion { hint: version }).into()
         );
         require!(
             log_segment.checkpoint_version.is_some()
@@ -360,26 +366,26 @@ impl SnapshotHint {
                     .ascending_commit_files
                     .first()
                     .is_some_and(|path| path.version == 0),
-            SnapshotHintError::MissingHistoryAnchor.into()
+            KernelError::from(SnapshotHintError::MissingHistoryAnchor).into()
         );
         let table_configuration =
             TableConfiguration::try_new(metadata, protocol, table_url, version)?;
         if let Some(crc) = crc.as_ref() {
             require!(
                 crc.version == version,
-                SnapshotHintError::CrcVersion {
+                KernelError::from(SnapshotHintError::CrcVersion {
                     crc: crc.version,
                     hint: version,
-                }
+                })
                 .into()
             );
             require!(
                 crc.protocol == *table_configuration.protocol(),
-                SnapshotHintError::CrcProtocol.into()
+                KernelError::from(SnapshotHintError::CrcProtocol).into()
             );
             require!(
                 crc.metadata == *table_configuration.metadata(),
-                SnapshotHintError::CrcMetadata.into()
+                KernelError::from(SnapshotHintError::CrcMetadata).into()
             );
         }
 
@@ -391,6 +397,7 @@ impl SnapshotHint {
             false, /* skipped_new_checkpoints */
         )
         .map(Into::into)
+        .map_err(crate::Error::Kernel)
     }
 }
 
@@ -467,20 +474,26 @@ mod tests {
         expected: &str,
     ) {
         let error = builder.with_snapshot_hint(hint).build(engine).unwrap_err();
-        assert!(matches!(&error, KernelError::SnapshotHint(_)));
+        assert!(matches!(
+            &error,
+            delta_kernel::Error::Kernel(KernelError::SnapshotHint(_))
+        ));
         assert!(
             error.to_string().contains(expected),
             "expected error to contain {expected:?}, got {error}"
         );
     }
 
-    fn assert_log_segment_hint_error(result: KernelResult<SnapshotRef>, expected_source: &str) {
+    fn assert_log_segment_hint_error(
+        result: delta_kernel::Result<SnapshotRef>,
+        expected_source: &str,
+    ) {
         let error = result.unwrap_err();
         assert_eq!(
             error.to_string(),
             "Invalid snapshot hint: supplied log files do not form a valid log segment"
         );
-        let KernelError::SnapshotHint(source) = error else {
+        let delta_kernel::Error::Kernel(KernelError::SnapshotHint(source)) = error else {
             panic!("expected SnapshotHint")
         };
         let source = source
@@ -696,7 +709,7 @@ mod tests {
         #[case] expected_published_version: Option<Version>,
         #[values(false, true)] foreign_table: bool,
         #[values(false, true)] reverse_paths: bool,
-    ) -> KernelResult<()> {
+    ) -> delta_kernel::Result<()> {
         const TABLE_ROOT: &str = "memory:///target/";
         const LOG_ROOT: &str = "memory:///target/_delta_log/";
 
@@ -728,6 +741,7 @@ mod tests {
             None,
             SnapshotHintFreshness::Unverified,
         )
+        .map_err(delta_kernel::Error::Kernel)
         .and_then(|hint| {
             SnapshotBuilder::new_for(TABLE_ROOT)
                 .with_snapshot_hint(hint)
@@ -737,7 +751,7 @@ mod tests {
         if foreign_table {
             assert!(matches!(
                 result.unwrap_err(),
-                KernelError::SnapshotHint(source)
+                delta_kernel::Error::Kernel(KernelError::SnapshotHint(source))
                     if matches!(
                         &*source,
                         SnapshotHintError::LogPathOutsideRoot { path, log_root }
@@ -815,7 +829,7 @@ mod tests {
         } else {
             assert!(matches!(
                 result.unwrap_err(),
-                KernelError::SnapshotHint(source)
+                delta_kernel::Error::Kernel(KernelError::SnapshotHint(source))
                     if matches!(
                         &*source,
                         SnapshotHintError::LogPathOutsideRoot { path, log_root }
@@ -992,7 +1006,7 @@ mod tests {
         let error = result.unwrap_err();
         assert!(matches!(
             error,
-            KernelError::SnapshotHint(source)
+            delta_kernel::Error::Kernel(KernelError::SnapshotHint(source))
                 if matches!(
                     &*source,
                     SnapshotHintError::LogPathOutsideRoot { path, log_root }
@@ -1204,7 +1218,10 @@ mod tests {
             .with_snapshot_hint(hint)
             .build(engine.as_ref())
             .unwrap_err();
-        assert!(matches!(err, KernelError::SnapshotHint(_)));
+        assert!(matches!(
+            err,
+            delta_kernel::Error::Kernel(KernelError::SnapshotHint(_))
+        ));
         Ok(())
     }
 
@@ -1297,7 +1314,7 @@ mod tests {
             .with_snapshot_hint(hint)
             .build(engine.as_ref())
             .unwrap_err();
-        let KernelError::SnapshotHint(source) = err else {
+        let delta_kernel::Error::Kernel(KernelError::SnapshotHint(source)) = err else {
             panic!("expected SnapshotHint")
         };
         let source = source
@@ -1408,7 +1425,10 @@ mod tests {
             .with_max_catalog_version(hint.version + 1)
             .with_snapshot_hint(hint)
             .build(engine.as_ref());
-        assert!(matches!(&result, Err(KernelError::SnapshotHint(_))));
+        assert!(matches!(
+            &result,
+            Err(delta_kernel::Error::Kernel(KernelError::SnapshotHint(_)))
+        ));
         assert_result_error_with_message(result, "does not match snapshot hint version");
         let events = reporter.events();
         assert_eq!(events.len(), 1);
@@ -1485,7 +1505,12 @@ mod tests {
             .with_max_catalog_version(0)
             .with_snapshot_hint(lower_bound_hint)
             .build(engine.as_ref());
-        assert!(matches!(result, Err(KernelError::MaxCatalogVersion(_))));
+        assert!(matches!(
+            result,
+            Err(delta_kernel::Error::Kernel(KernelError::MaxCatalogVersion(
+                _
+            )))
+        ));
 
         let hinted = SnapshotBuilder::new_for(&table_root)
             .at_version(1)

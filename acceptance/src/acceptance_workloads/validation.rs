@@ -330,8 +330,30 @@ fn expected_error_matches(expected: &ExpectedError, actual: &Error) -> bool {
     }
 }
 
-fn validate_expected_error(actual: &Error, expected: &ExpectedError) -> KernelResult<(), String> {
-    if expected_error_matches(expected, actual) {
+fn validate_expected_error(
+    actual: &delta_kernel::Error,
+    expected: &ExpectedError,
+) -> KernelResult<(), String> {
+    let matches =
+        match actual {
+            delta_kernel::Error::Kernel(error) => expected_error_matches(expected, error),
+            delta_kernel::Error::Delta(error) => error.condition().name() == expected.error_code
+                || (error.condition() == delta_kernel::DeltaErrorCondition::DeltaPathDoesNotExist
+                    && matches!(
+                        expected.error_code.as_str(),
+                        "DELTA_TABLE_NOT_FOUND"
+                            | "DELTA_MISSING_TRANSACTION_LOG"
+                            | "DELTA_TRUNCATED_TRANSACTION_LOG"
+                    ))
+                || (error.condition()
+                    == delta_kernel::DeltaErrorCondition::DeltaVersionsNotContiguous
+                    && expected.error_code == "DELTA_VERSIONS_NOT_CONTIGUOUS.GENERIC")
+                || (error.condition()
+                    == delta_kernel::DeltaErrorCondition::DeltaDuplicateColumnsFoundExistingSchema
+                    && expected.error_code == "COLUMN_ALREADY_EXISTS"),
+            _ => false,
+        };
+    if matches {
         debug!(
             "Got expected error '{}' with message: {:?}\nKernel error: {}",
             expected.error_code, expected.error_message, actual
@@ -405,7 +427,7 @@ fn read_expected_data(expected_dir: &Path) -> KernelResult<RecordBatch, String> 
 
 /// Validate read results against expected outcome.
 pub fn validate_read_result(
-    result: KernelResult<ReadResult>,
+    result: delta_kernel::Result<ReadResult>,
     expected_dir: &Path,
     expected: &ReadExpected,
 ) -> KernelResult<(), String> {
@@ -449,7 +471,7 @@ pub fn validate_read_result(
 
 /// Validate snapshot result against expected outcome.
 pub fn validate_snapshot(
-    result: KernelResult<SnapshotResult>,
+    result: delta_kernel::Result<SnapshotResult>,
     time_travel: Option<&TimeTravel>,
     expected: &SnapshotExpected,
 ) -> KernelResult<(), String> {
@@ -525,19 +547,54 @@ mod tests {
     }
 
     #[test]
+    fn missing_path_matches_legacy_workload_categories() {
+        let error = delta_kernel::DeltaError::delta_path_does_not_exist("missing_table").into();
+        for (code, matches) in [
+            ("DELTA_PATH_DOES_NOT_EXIST", true),
+            ("DELTA_TABLE_NOT_FOUND", true),
+            ("DELTA_MISSING_TRANSACTION_LOG", true),
+            ("DELTA_TRUNCATED_TRANSACTION_LOG", true),
+            ("DELTA_STATE_RECOVER_ERROR", false),
+        ] {
+            assert_eq!(
+                validate_expected_error(&error, &expected_error(code)).is_ok(),
+                matches
+            );
+        }
+    }
+
+    #[test]
+    fn version_gap_matches_legacy_workload_category() {
+        let error = delta_kernel::DeltaError::delta_versions_not_contiguous("0, 2", 0, 2, 2).into();
+        assert!(validate_expected_error(
+            &error,
+            &expected_error("DELTA_VERSIONS_NOT_CONTIGUOUS.GENERIC")
+        )
+        .is_ok());
+        assert!(validate_expected_error(&error, &expected_error("DELTA_TABLE_NOT_FOUND")).is_err());
+    }
+
+    #[test]
     fn expected_error_rejects_unrelated_kernel_error() {
         let expected = expected_error("DELTA_STATE_RECOVER_ERROR");
-        assert!(validate_expected_error(&Error::MissingMetadata, &expected).is_ok());
         assert!(validate_expected_error(
-            &Error::InvalidCheckpoint(
+            &delta_kernel::Error::Kernel(Error::MissingMetadata),
+            &expected
+        )
+        .is_ok());
+        assert!(validate_expected_error(
+            &delta_kernel::Error::Kernel(Error::InvalidCheckpoint(
                 "Had a _last_checkpoint hint but didn't find any checkpoints".to_string()
-            ),
+            )),
             &expected
         )
         .is_ok());
 
-        let error = validate_expected_error(&Error::FileNotFound("x".into()), &expected)
-            .expect_err("wrong error category must fail");
+        let error = validate_expected_error(
+            &delta_kernel::Error::Kernel(Error::FileNotFound("x".into())),
+            &expected,
+        )
+        .expect_err("wrong error category must fail");
         assert!(error.contains("Expected error category 'DELTA_STATE_RECOVER_ERROR'"));
     }
 
@@ -605,6 +662,22 @@ mod tests {
             &expected_error("COLUMN_ALREADY_EXISTS"),
             &Error::MalformedJson(malformed_json)
         ));
+    }
+
+    #[test]
+    fn column_already_exists_accepts_delta_duplicate_existing_schema() {
+        let error = delta_kernel::DeltaError::delta_duplicate_existing_schema_columns("id").into();
+        assert!(validate_expected_error(&error, &expected_error("COLUMN_ALREADY_EXISTS")).is_ok());
+        assert!(validate_expected_error(
+            &error,
+            &expected_error("DELTA_DUPLICATE_COLUMNS_FOUND.EXISTING_SCHEMA")
+        )
+        .is_ok());
+        assert!(validate_expected_error(
+            &error,
+            &expected_error("DELTA_PARSING_UNSUPPORTED_DATA_TYPE")
+        )
+        .is_err());
     }
 
     #[test]

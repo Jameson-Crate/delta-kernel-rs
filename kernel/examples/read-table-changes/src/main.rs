@@ -6,7 +6,7 @@ use delta_kernel::arrow::array::RecordBatch;
 use delta_kernel::arrow::util::pretty::print_batches;
 use delta_kernel::engine::arrow_data::EngineDataArrowExt;
 use delta_kernel::table_changes::TableChanges;
-use delta_kernel::KernelResult;
+use delta_kernel::KernelError;
 use itertools::Itertools;
 
 #[derive(Parser)]
@@ -24,7 +24,7 @@ struct Cli {
     end_version: Option<u64>,
 }
 
-fn main() -> KernelResult<()> {
+fn main() -> delta_kernel::Result<()> {
     let cli = Cli::parse_with_examples(
         env!("CARGO_PKG_NAME"),
         "Read changes in",
@@ -38,8 +38,8 @@ fn main() -> KernelResult<()> {
     let table_changes_scan = table_changes.into_scan_builder().build()?;
     let batches: Vec<RecordBatch> = table_changes_scan
         .execute(Arc::new(engine))?
-        .map(EngineDataArrowExt::try_into_record_batch)
+        .map(|batch| -> delta_kernel::Result<_> { Ok(batch?.try_into_record_batch()?) })
         .try_collect()?;
-    print_batches(&batches)?;
+    print_batches(&batches).map_err(KernelError::from)?;
     Ok(())
 }

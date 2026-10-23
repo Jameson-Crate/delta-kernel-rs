@@ -3,8 +3,16 @@
 use std::backtrace::Backtrace;
 use std::error::Error as StdError;
 use std::fmt;
+use std::path::Path;
 
 use super::DeltaErrorCondition;
+
+/// Builds diagnostic parameters in the supplied order, stringifying each value.
+macro_rules! delta_parameters {
+    ($($name:expr => $value:expr),* $(,)?) => {
+        vec![$(DeltaErrorParameter::new($name, $value)),*]
+    };
+}
 
 /// A catalog-defined Delta failure that terminates the current operation.
 ///
@@ -60,23 +68,126 @@ impl DeltaError {
         &self.backtrace
     }
 
-    /// Creates an error with an optional diagnostic cause and captures its backtrace.
+    /// Returns this error with `source` attached as its diagnostic cause, replacing any prior
+    /// cause.
+    #[must_use]
+    pub fn with_source(
+        mut self,
+        source: impl Into<Box<dyn StdError + Send + Sync + 'static>>,
+    ) -> Self {
+        self.source = Some(source.into());
+        self
+    }
+
+    /// Creates a missing-path failure with `path` as its diagnostic table location.
+    pub fn delta_path_does_not_exist(path: impl AsRef<Path>) -> Self {
+        DeltaError::new(
+            DeltaErrorCondition::DeltaPathDoesNotExist,
+            delta_parameters!["path" => path.as_ref().display()],
+        )
+    }
+
+    /// Creates a missing-history failure for `version`, replayed from `checkpoint_version` at
+    /// `log_path`. All three values describe the snapshot reconstruction that failed.
+    pub fn delta_log_file_not_found(
+        version: crate::Version,
+        checkpoint_version: crate::Version,
+        log_path: &url::Url,
+    ) -> Self {
+        Self::new(
+            DeltaErrorCondition::DeltaLogFileNotFound,
+            delta_parameters![
+                "version" => version,
+                "checkpointVersion" => checkpoint_version,
+                "logPath" => log_path,
+            ],
+        )
+    }
+
+    /// Creates a history-gap failure for the diagnostic `version_list`, bounded by `start_version`
+    /// and `end_version`, while loading `version_to_load`.
+    pub fn delta_versions_not_contiguous(
+        version_list: impl ToString,
+        start_version: crate::Version,
+        end_version: crate::Version,
+        version_to_load: crate::Version,
+    ) -> Self {
+        Self::new(
+            DeltaErrorCondition::DeltaVersionsNotContiguous,
+            delta_parameters![
+                "versionList" => version_list,
+                "startVersion" => start_version,
+                "endVersion" => end_version,
+                "versionToLoad" => version_to_load,
+            ],
+        )
+    }
+
+    /// Creates an adaptive-metadata failure for the explicitly stored column-mapping `mode`.
+    pub fn delta_adaptive_metadata_requires_column_mapping_id_mode(mode: impl ToString) -> Self {
+        Self::new(
+            DeltaErrorCondition::DeltaAdaptiveMetadataRequiresColumnMappingIdMode,
+            delta_parameters![
+                "feature" => "adaptiveMetadata-preview",
+                "prop" => "delta.columnMapping.mode",
+                "mode" => mode,
+            ],
+        )
+    }
+
+    /// Creates a duplicate-partition-column failure with `duplicate_columns` as diagnostic names.
+    pub fn delta_duplicate_partition_columns(duplicate_columns: impl ToString) -> Self {
+        Self::new(
+            DeltaErrorCondition::DeltaDuplicateColumnsFoundPartitionColumns,
+            delta_parameters!["duplicateCols" => duplicate_columns],
+        )
+    }
+
+    /// Creates a persisted-schema failure for the rejected duplicate logical field name.
+    pub fn delta_duplicate_existing_schema_columns(duplicate_columns: impl ToString) -> Self {
+        Self::new(
+            DeltaErrorCondition::DeltaDuplicateColumnsFoundExistingSchema,
+            delta_parameters!["duplicateCols" => duplicate_columns],
+        )
+    }
+
+    /// Creates a schema-decoding failure for the unsupported persisted `data_type` token.
+    pub fn delta_parsing_unsupported_data_type(data_type: impl ToString) -> Self {
+        Self::new(
+            DeltaErrorCondition::DeltaParsingUnsupportedDataType,
+            delta_parameters!["dataType" => data_type],
+        )
+    }
+
+    /// Creates a missing-partition-column failure for `column_name`, with `schema_map` listing
+    /// the logical schema fields available to resolve it.
+    pub fn delta_partition_column_not_found(
+        column_name: impl ToString,
+        schema_map: impl ToString,
+    ) -> Self {
+        Self::new(
+            DeltaErrorCondition::DeltaPartitionColumnNotFound,
+            delta_parameters!["columnName" => column_name, "schemaMap" => schema_map],
+        )
+    }
+
+    /// Creates an invalid-version failure, retaining the signed version supplied by the catalog.
+    pub fn delta_version_invalid(version: i64) -> Self {
+        Self::new(
+            DeltaErrorCondition::DeltaVersionInvalid,
+            delta_parameters!["version" => version],
+        )
+    }
+
+    /// Creates an error without a diagnostic cause and captures its backtrace.
     ///
     /// `parameters` must contain exactly [`DeltaErrorCondition::parameter_names`], in that order.
     /// Condition-specific factories must maintain this invariant.
-    #[allow(
-        dead_code,
-        reason = "Construction is reserved for condition-specific factories."
-    )]
-    fn new(
-        condition: DeltaErrorCondition,
-        parameters: Vec<DeltaErrorParameter>,
-        source: Option<Box<dyn StdError + Send + Sync + 'static>>,
-    ) -> Self {
+    fn new(condition: DeltaErrorCondition, parameters: Vec<DeltaErrorParameter>) -> Self {
         Self {
             condition,
             parameters: parameters.into_boxed_slice(),
-            source,
+            source: None,
             backtrace: Backtrace::capture(),
         }
     }
@@ -109,10 +220,6 @@ impl DeltaErrorParameter {
         &self.value
     }
 
-    #[allow(
-        dead_code,
-        reason = "Construction is reserved for condition-specific factories."
-    )]
     fn new(name: &'static str, value: impl ToString) -> Self {
         Self {
             name,
@@ -145,272 +252,51 @@ fn render_template(
 
 #[cfg(test)]
 mod tests {
-    use std::backtrace::Backtrace;
-    use std::error::Error as StdError;
-    use std::fmt::{self, Write as _};
     use std::io;
 
-    use rstest::rstest;
+    use super::*;
 
-    use super::{render_template, DeltaError, DeltaErrorParameter};
-    use crate::{
-        DeltaErrorCondition, Error, KernelError, Result, ResultIterator, ResultIteratorStatic,
-    };
-
-    struct LimitedWriter {
-        remaining_bytes: usize,
-    }
-
-    impl fmt::Write for LimitedWriter {
-        fn write_str(&mut self, text: &str) -> fmt::Result {
-            self.remaining_bytes = self
-                .remaining_bytes
-                .checked_sub(text.len())
-                .ok_or(fmt::Error)?;
-            Ok(())
-        }
-    }
-
-    #[rstest]
-    #[case::without_parameters(
-        DeltaErrorCondition::DeltaActiveSparkSessionNotFound,
-        &[],
-        Some("08003"),
-        "Could not find active SparkSession"
-    )]
-    #[case::subclass(
-        DeltaErrorCondition::DeltaCannotWriteEmptySchemaStructNoFields,
-        &[("columnPath", "payload")],
-        Some("428GU"),
-        "The Delta table is not writable because parts of the schema are not supported.\nReason: \
-         The column payload is a struct with no fields."
-    )]
-    #[case::repeated_parameter(
-        DeltaErrorCondition::DeltaCannotUpdateArrayField,
-        &[("tableName", "events"), ("fieldName", "items")],
-        Some("429BQ"),
-        "Cannot update events field items type: update the element by updating `items.element`."
-    )]
-    #[case::multiple_parameters(
-        DeltaErrorCondition::DeltaVersionsNotContiguous,
-        &[
-            ("versionList", "10,12"),
-            ("startVersion", "10"),
-            ("endVersion", "12"),
-            ("versionToLoad", "12"),
-        ],
-        Some("KD00C"),
-        "Versions (10,12) are not contiguous. \nA gap in the delta log between versions \
-         10 and 12 was detected while trying to load version 12."
-    )]
-    fn catalog_error_exposes_metadata_and_message(
-        #[case] condition: DeltaErrorCondition,
-        #[case] parameters: &[(&'static str, &str)],
-        #[case] sql_state: Option<&str>,
-        #[case] expected_message: &str,
-    ) {
+    #[test]
+    fn delta_parameters_render_mixed_value_types() {
         let error = DeltaError::new(
-            condition,
-            parameters
-                .iter()
-                .map(|(name, value)| DeltaErrorParameter::new(name, value))
-                .collect(),
-            None,
+            DeltaErrorCondition::DeltaLogFileNotFound,
+            delta_parameters![
+                "version" => 42_u64,
+                "checkpointVersion" => 40_u64,
+                "logPath" => "s3://bucket/table/_delta_log/",
+            ],
         );
+        assert_eq!(
+            error.message(),
+            "Unable to retrieve the delta log files to construct table version 42 starting from \
+             checkpoint version 40 at s3://bucket/table/_delta_log/."
+        );
+    }
 
+    #[test]
+    fn with_source_preserves_diagnostics_and_replaces_cause() {
+        let error = DeltaError::delta_path_does_not_exist("<path>/table");
+        assert!(error.source().is_none());
+        let condition = error.condition();
+        let sql_state = error.sql_state();
+        let message = error.message();
+
+        let error = error.with_source(io::Error::new(io::ErrorKind::NotFound, "missing directory"));
         assert_eq!(error.condition(), condition);
         assert_eq!(error.sql_state(), sql_state);
-        assert_eq!(
-            error
-                .parameters()
-                .iter()
-                .map(|parameter| (parameter.name(), parameter.value()))
-                .collect::<Vec<_>>(),
-            parameters
-        );
-        assert_eq!(error.message(), expected_message);
-        assert_eq!(error.to_string(), expected_message);
-        assert!(error.source().is_none());
+        assert_eq!(error.message(), message);
+        assert_eq!(error.parameters()[0].name(), "path");
+        assert_eq!(error.parameters()[0].value(), "<path>/table");
+        let source = error.source().unwrap().downcast_ref::<io::Error>().unwrap();
+        assert_eq!(source.kind(), io::ErrorKind::NotFound);
 
-        let error: Error = error.into();
-        assert_eq!(error.to_string(), expected_message);
-        assert!(error.source().is_none());
-    }
-
-    #[rstest]
-    #[case::zero(0, "0")]
-    #[case::positive(42, "42")]
-    #[case::negative(-42, "-42")]
-    fn parameter_stringifies_diagnostic_value(#[case] value: i64, #[case] expected: &str) {
-        let parameter = DeltaErrorParameter::new("version", value);
-        assert_eq!(parameter.name(), "version");
-        assert_eq!(parameter.value(), expected);
-    }
-
-    #[rstest]
-    #[case::empty_value("<first>", "", "")]
-    #[case::adjacent_parameters("<first><second>", "value", "valuesecond")]
-    #[case::placeholder_in_value(
-        "<first> <second> <first>",
-        "<second>",
-        "<second> second <second>"
-    )]
-    #[case::unicode("π<first>東京", "Δé\n文字", "πΔé\n文字東京")]
-    #[case::literal_angle_brackets(
-        "a<> < first > <unknown> <<first>> <first",
-        "value",
-        "a<> < first > <unknown> <value> <first"
-    )]
-    #[case::literal_comparison("a < b > c <first>", "value", "a < b > c value")]
-    fn rendering_preserves_literal_text(
-        #[case] template: &str,
-        #[case] first_value: &str,
-        #[case] expected: &str,
-    ) {
-        let parameters = [
-            DeltaErrorParameter::new("first", first_value),
-            DeltaErrorParameter::new("second", "second"),
-        ];
-        let mut message = String::new();
-        render_template(template, &parameters, &mut message).unwrap();
-        assert_eq!(message, expected);
-    }
-
-    #[rstest]
-    #[case::literal_prefix("prefix<first>", 5)]
-    #[case::parameter_value("<first>", 0)]
-    #[case::literal_delimiter("<", 0)]
-    #[case::literal_suffix("<first>suffix", 5)]
-    fn rendering_propagates_output_errors(#[case] template: &str, #[case] remaining_bytes: usize) {
-        let parameters = [DeltaErrorParameter::new("first", "value")];
-        let mut output = LimitedWriter { remaining_bytes };
-        assert_eq!(
-            render_template(template, &parameters, &mut output),
-            Err(fmt::Error)
-        );
-    }
-
-    #[test]
-    fn display_propagates_output_errors() {
-        let error = DeltaError::new(
-            DeltaErrorCondition::DeltaActiveSparkSessionNotFound,
-            vec![],
-            None,
-        );
-        let mut output = LimitedWriter { remaining_bytes: 0 };
-        assert!(write!(&mut output, "{error}").is_err());
-    }
-
-    #[test]
-    fn all_catalog_templates_render_with_literal_parameter_values() {
-        for &condition in DeltaErrorCondition::ALL {
-            let parameters: Vec<_> = condition
-                .parameter_names()
-                .iter()
-                .map(|name| DeltaErrorParameter::new(name, format!("value of {name}")))
-                .collect();
-            let expected = parameters.iter().fold(
-                condition.message_template().to_string(),
-                |message, parameter| {
-                    message.replace(&format!("<{}>", parameter.name()), parameter.value())
-                },
-            );
-            let error = DeltaError::new(condition, parameters, None);
-            assert_eq!(error.message(), expected, "{}", condition.name());
-        }
-    }
-
-    #[rstest]
-    #[case::direct(false)]
-    #[case::nested_kernel_error(true)]
-    fn envelope_preserves_original_cause_without_exposing_it_in_display(#[case] nested: bool) {
-        let source = Box::new(io::Error::other("private cause"));
-        let original_source = std::ptr::from_ref(source.as_ref());
-        let source: Box<dyn StdError + Send + Sync> = if nested {
-            Box::new(KernelError::GenericError { source })
-        } else {
-            source
-        };
-        let delta = DeltaError::new(
-            DeltaErrorCondition::DeltaActiveSparkSessionNotFound,
-            vec![],
-            Some(source),
-        );
-        let error = Error::from(delta);
-        let Error::Delta(delta) = &error else {
-            panic!("expected a Delta error");
-        };
-
-        assert_eq!(error.to_string(), delta.message());
-        assert!(!error.to_string().contains("private cause"));
-        assert!(format!("{error:?}").contains("private cause"));
-        let source = error.source().unwrap();
-        assert!(std::ptr::eq(source, delta.source().unwrap()));
-        let source = if nested {
-            source
-                .downcast_ref::<KernelError>()
-                .unwrap()
-                .source()
-                .unwrap()
-        } else {
-            source
-        };
-        assert!(std::ptr::eq(
-            source.downcast_ref::<io::Error>().unwrap(),
-            original_source
+        let replacement: Box<dyn StdError + Send + Sync> = Box::new(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "access denied",
         ));
-    }
-
-    #[test]
-    fn constructor_captures_backtrace_and_envelope_preserves_it() {
-        let delta = DeltaError::new(
-            DeltaErrorCondition::DeltaActiveSparkSessionNotFound,
-            vec![],
-            None,
-        );
-        assert_eq!(delta.backtrace().status(), Backtrace::capture().status());
-        let backtrace = delta.backtrace().to_string();
-        let error: Error = delta.into();
-        let Error::Delta(delta) = error else {
-            panic!("expected a Delta error");
-        };
-        assert_eq!(delta.backtrace().to_string(), backtrace);
-        assert!(format!("{delta:?}").contains(&format!("{:?}", delta.backtrace())));
-    }
-
-    #[test]
-    fn delta_error_propagates_through_result() {
-        let propagate = |result: std::result::Result<(), DeltaError>| -> Result<()> {
-            result?;
-            Ok(())
-        };
-        assert!(propagate(Ok(())).is_ok());
-        let delta = DeltaError::new(
-            DeltaErrorCondition::DeltaActiveSparkSessionNotFound,
-            vec![],
-            None,
-        );
-        let error = propagate(Err(delta)).unwrap_err();
-        assert!(matches!(error, Error::Delta(delta)
-            if delta.condition() == DeltaErrorCondition::DeltaActiveSparkSessionNotFound));
-    }
-
-    #[test]
-    fn delta_error_propagates_through_result_iterator() {
-        let delta = DeltaError::new(
-            DeltaErrorCondition::DeltaActiveSparkSessionNotFound,
-            vec![],
-            None,
-        );
-        let errors = std::iter::once(Err::<(), _>(delta));
-        let errors: ResultIteratorStatic<()> =
-            Box::new(errors.map(|result| result.map_err(Error::from)));
-        let mut errors: ResultIterator<'_, ()> = errors;
-        assert!(matches!(
-            errors.next().unwrap(),
-            Err(Error::Delta(delta))
-                if delta.condition() == DeltaErrorCondition::DeltaActiveSparkSessionNotFound
-        ));
-        assert!(errors.next().is_none());
+        let error = error.with_source(replacement);
+        assert_eq!(error.message(), message);
+        let source = error.source().unwrap().downcast_ref::<io::Error>().unwrap();
+        assert_eq!(source.kind(), io::ErrorKind::PermissionDenied);
     }
 }

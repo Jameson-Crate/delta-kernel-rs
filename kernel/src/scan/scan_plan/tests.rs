@@ -216,7 +216,7 @@ fn declarative_metadata_matches_imperative_scan(
         Some(col!("id").is_not_null())
     )]
     predicate: Option<Pred>,
-) -> KernelResult<()> {
+) -> delta_kernel::Result<()> {
     let (engine, snapshot, _tempdir) = crate::unit_test_utils::load_test_table(table)?;
     let predicate = predicate.map(Arc::new);
 
@@ -243,13 +243,17 @@ fn declarative_metadata_matches_imperative_scan(
     let actual = declarative_metadata(&scan, engine.as_ref())?;
 
     if table.contains("struct-stats-only") {
-        assert_metadata_eq(
+        Ok(assert_metadata_eq(
             &without_columns(&actual, &[STATS])?,
             &without_columns(&expected, &[STATS])?,
             &format!("table {table}"),
-        )
+        )?)
     } else {
-        assert_metadata_eq(&actual, &expected, &format!("table {table}"))
+        Ok(assert_metadata_eq(
+            &actual,
+            &expected,
+            &format!("table {table}"),
+        )?)
     }
 }
 
@@ -258,7 +262,7 @@ fn declarative_metadata_matches_imperative_scan(
 #[case::json_manifest("v2-checkpoints-json-with-sidecars")]
 fn declarative_metadata_scans_sidecars_from_checkpoint_hint(
     #[case] table: &str,
-) -> KernelResult<()> {
+) -> delta_kernel::Result<()> {
     let (engine, snapshot, _tempdir) = crate::unit_test_utils::load_test_table(table)?;
     let plan = snapshot
         .scan_builder()
@@ -297,7 +301,7 @@ fn declarative_metadata_scans_sidecars_from_checkpoint_hint(
 fn declarative_metadata_matches_imperative_across_stats_options(
     #[case] stats: StatsOptions,
     #[case] expected_stats_field_groups: &[&[&str]],
-) -> KernelResult<()> {
+) -> delta_kernel::Result<()> {
     let (engine, snapshot, _tempdir) = load_test_table("parsed-stats")?;
     let struct_stats = stats.struct_stats.clone();
     let no_stats = !stats.synthesize_json && matches!(&struct_stats, StructStats::None);
@@ -364,11 +368,11 @@ fn declarative_metadata_matches_imperative_across_stats_options(
         // Imperative metadata retains source JSON when synthesis is disabled.
         &[STATS][..]
     };
-    assert_metadata_eq(
+    Ok(assert_metadata_eq(
         &actual,
         &without_columns(&expected, ignored_stats)?,
         "metadata output options",
-    )
+    )?)
 }
 
 const ADD_FIELDS: &[&str] = &[
@@ -501,7 +505,7 @@ fn declarative_metadata_has_exact_leaf_schema_across_output_options(
     #[case] partition_values: PartitionValuesOptions,
     #[case] expected_field_groups: &[&[&str]],
 ) {
-    (|| -> KernelResult<()> {
+    (|| -> crate::Result<()> {
         let json_requested = stats.synthesize_json;
         let (engine, snapshot, _tempdir) =
             load_test_table("v1-multi-part-partitioned-struct-stats-only")?;
@@ -563,7 +567,7 @@ fn declarative_metadata_has_exact_leaf_schema_across_output_options(
 }
 
 #[test]
-fn declarative_metadata_projects_nested_column_mapped_stats() -> KernelResult<()> {
+fn declarative_metadata_projects_nested_column_mapped_stats() -> delta_kernel::Result<()> {
     let (engine, snapshot, _tempdir) = load_test_table("stats-writing-all-types/delta")?;
     let scan = snapshot
         .scan_builder()
@@ -644,7 +648,7 @@ fn declarative_metadata_output_options_across_log_shapes(
         PartitionValuesOptions::with_struct()
     )]
     partitions: PartitionValuesOptions,
-) -> KernelResult<()> {
+) -> delta_kernel::Result<()> {
     assert_metadata_output_options(log_state, features, table_config, stats, partitions)
 }
 
@@ -682,7 +686,7 @@ fn assert_metadata_output_options(
     table_config: TableConfig,
     stats: StatsOptions,
     partitions: PartitionValuesOptions,
-) -> KernelResult<()> {
+) -> delta_kernel::Result<()> {
     let json_requested = stats.synthesize_json;
     let parsed_partitions_requested = partitions.parsed_struct;
     let table = TestTableBuilder::new()
@@ -773,7 +777,7 @@ fn declarative_metadata_data_skipping(
     table: &str,
     #[case] predicate: Pred,
     #[case] expected_count: usize,
-) -> KernelResult<()> {
+) -> delta_kernel::Result<()> {
     let (engine, snapshot, _tempdir) = crate::unit_test_utils::load_test_table(table)?;
     let predicate = Arc::new(predicate);
     let expected = imperative_metadata(
@@ -796,11 +800,11 @@ fn declarative_metadata_data_skipping(
         .build()?;
     let actual = declarative_metadata(&scan, engine.as_ref())?;
 
-    assert_metadata_eq(
+    Ok(assert_metadata_eq(
         &without_columns(&actual, &[STATS])?,
         &without_columns(&expected, &[STATS])?,
         &format!("table {table}"),
-    )
+    )?)
 }
 
 #[rstest]
@@ -810,7 +814,7 @@ fn declarative_metadata_data_skipping(
 fn declarative_metadata_partition_values_prune_without_struct_stats(
     #[case] predicate: Pred,
     #[case] expected_count: usize,
-) -> KernelResult<()> {
+) -> delta_kernel::Result<()> {
     let (engine, snapshot, _tempdir) =
         crate::unit_test_utils::load_test_table("v1-multi-part-partitioned-struct-stats-only")?;
     let predicate = Arc::new(predicate);
@@ -833,11 +837,11 @@ fn declarative_metadata_partition_values_prune_without_struct_stats(
     assert!(scan.state_info.physical_stats_read_schema().is_none());
     let actual = declarative_metadata(&scan, engine.as_ref())?;
 
-    assert_metadata_eq(&actual, &expected, "partition pruning")
+    Ok(assert_metadata_eq(&actual, &expected, "partition pruning")?)
 }
 
 #[test]
-fn declarative_metadata_partition_is_null_keeps_null_partition() -> KernelResult<()> {
+fn declarative_metadata_partition_is_null_keeps_null_partition() -> delta_kernel::Result<()> {
     let (engine, snapshot, _tempdir) = load_test_table("data-reader-timestamp_ntz")?;
     let scan = snapshot
         .scan_builder()
@@ -845,7 +849,9 @@ fn declarative_metadata_partition_is_null_keeps_null_partition() -> KernelResult
         .with_partition_values(PartitionValuesOptions::with_struct())
         .build()?;
     let actual = declarative_metadata(&scan, engine.as_ref())?;
-    let formatted = pretty_format_batches(&actual)?.to_string();
+    let formatted = pretty_format_batches(&actual)
+        .map_err(delta_kernel::KernelError::from)?
+        .to_string();
 
     assert_eq!(metadata_row_count(&actual), 1, "{formatted}");
     let batch = actual.first().expect("null partition metadata");
@@ -878,7 +884,8 @@ fn declarative_metadata_partition_is_null_keeps_null_partition() -> KernelResult
 }
 
 #[test]
-fn declarative_metadata_reconstructs_well_formed_stats_and_partitions() -> KernelResult<()> {
+fn declarative_metadata_reconstructs_well_formed_stats_and_partitions() -> delta_kernel::Result<()>
+{
     let (engine, snapshot, _tempdir) =
         crate::unit_test_utils::load_test_table("v1-multi-part-partitioned-struct-stats-only")?;
     let scan = snapshot
@@ -904,23 +911,28 @@ fn declarative_metadata_reconstructs_well_formed_stats_and_partitions() -> Kerne
             .as_any()
             .downcast_ref::<StructArray>()
             .expect("add struct");
-        projected.push(RecordBatch::try_from_iter([
-            (
-                "stats",
-                add.column_by_name(STATS_PARSED)
-                    .expect("add.stats_parsed")
-                    .clone(),
-            ),
-            (
-                "partitionValues",
-                add.column_by_name(PARTITION_VALUES_PARSED)
-                    .expect("add.partitionValues_parsed")
-                    .clone(),
-            ),
-        ])?);
+        projected.push(
+            RecordBatch::try_from_iter([
+                (
+                    "stats",
+                    add.column_by_name(STATS_PARSED)
+                        .expect("add.stats_parsed")
+                        .clone(),
+                ),
+                (
+                    "partitionValues",
+                    add.column_by_name(PARTITION_VALUES_PARSED)
+                        .expect("add.partitionValues_parsed")
+                        .clone(),
+                ),
+            ])
+            .map_err(delta_kernel::KernelError::from)?,
+        );
     }
 
-    let formatted = pretty_format_batches(&projected)?.to_string();
+    let formatted = pretty_format_batches(&projected)
+        .map_err(delta_kernel::KernelError::from)?
+        .to_string();
     let mut actual_rows: Vec<_> = formatted
         .lines()
         .filter(|line| line.starts_with("| {numRecords:"))
@@ -948,7 +960,7 @@ fn expected_stats_row(id: i64, partition: i32) -> String {
 }
 
 #[test]
-fn declarative_metadata_reconciles_checkpoint_with_later_commits() -> KernelResult<()> {
+fn declarative_metadata_reconciles_checkpoint_with_later_commits() -> delta_kernel::Result<()> {
     let table = TestTableBuilder::new()
         .with_log_state(LogState::with_latest_version(4).with_checkpoint_at([2]))
         .build()
@@ -974,18 +986,25 @@ fn declarative_metadata_reconciles_checkpoint_with_later_commits() -> KernelResu
         .build()?;
     let actual = declarative_metadata(&scan, &engine)?;
 
-    assert_metadata_eq(&actual, &expected, "checkpoint with later commits")
+    Ok(assert_metadata_eq(
+        &actual,
+        &expected,
+        "checkpoint with later commits",
+    )?)
 }
 
 #[test]
-fn declarative_metadata_pruning_keeps_remove_for_checkpoint_reconciliation() -> KernelResult<()> {
+fn declarative_metadata_pruning_keeps_remove_for_checkpoint_reconciliation(
+) -> delta_kernel::Result<()> {
     let (engine, snapshot, _tempdir) = load_test_table("with_checkpoint_no_last_checkpoint")?;
     let scan = snapshot
         .scan_builder()
         .with_predicate(Arc::new(col!("int").gt(lit(0i64))))
         .build()?;
     let actual = declarative_metadata(&scan, engine.as_ref())?;
-    let formatted = pretty_format_batches(&actual)?.to_string();
+    let formatted = pretty_format_batches(&actual)
+        .map_err(delta_kernel::KernelError::from)?
+        .to_string();
 
     assert_eq!(metadata_row_count(&actual), 1, "{formatted}");
     let path = actual[0]
@@ -1018,7 +1037,7 @@ fn declarative_metadata_prunes_across_v1_log_states(
         )
     )]
     pruning: (Pred, usize),
-) -> KernelResult<()> {
+) -> delta_kernel::Result<()> {
     assert_declarative_metadata_matches_imperative(
         log_state,
         FeatureSet::new(),
@@ -1030,7 +1049,7 @@ fn declarative_metadata_prunes_across_v1_log_states(
 #[rstest]
 fn declarative_metadata_partition_prunes_v2_checkpoints(
     #[values(2, 4)] checkpoint_version: u64,
-) -> KernelResult<()> {
+) -> delta_kernel::Result<()> {
     let log_state = LogState::with_latest_version(4)
         .with_checkpoint_at([checkpoint_version])
         .with_sidecars_if_enabled(None);
@@ -1047,7 +1066,7 @@ fn assert_declarative_metadata_matches_imperative(
     features: FeatureSet,
     predicate: Pred,
     expected_count: usize,
-) -> KernelResult<()> {
+) -> delta_kernel::Result<()> {
     let table = TestTableBuilder::new()
         .with_log_state(log_state)
         .with_features(features)
@@ -1082,11 +1101,12 @@ fn assert_declarative_metadata_matches_imperative(
         .build()?;
     let actual = declarative_metadata(&scan, &engine)?;
 
-    assert_metadata_eq(&actual, &expected, table.description())
+    Ok(assert_metadata_eq(&actual, &expected, table.description())?)
 }
 
 #[test]
-fn test_declarative_metadata_scan_plan_no_executor_returns_unsupported() -> KernelResult<()> {
+fn test_declarative_metadata_scan_plan_no_executor_returns_unsupported() -> delta_kernel::Result<()>
+{
     let table = TestTableBuilder::new()
         .with_log_state(LogState::with_latest_version(4).with_checkpoint_at([2]))
         .build()
