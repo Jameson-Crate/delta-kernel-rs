@@ -336,7 +336,16 @@ fn validate_expected_error(
 ) -> KernelResult<(), String> {
     let matches = match actual {
         delta_kernel::Error::Kernel(error) => expected_error_matches(expected, error),
-        delta_kernel::Error::Delta(error) => error.condition().name() == expected.error_code,
+        delta_kernel::Error::Delta(error) => {
+            error.condition().name() == expected.error_code
+                || (error.condition() == delta_kernel::DeltaErrorCondition::DeltaPathDoesNotExist
+                    && matches!(
+                        expected.error_code.as_str(),
+                        "DELTA_TABLE_NOT_FOUND"
+                            | "DELTA_MISSING_TRANSACTION_LOG"
+                            | "DELTA_TRUNCATED_TRANSACTION_LOG"
+                    ))
+        }
         _ => false,
     };
     if matches {
@@ -530,6 +539,23 @@ mod tests {
             }
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn missing_path_matches_legacy_workload_categories() {
+        let error = delta_kernel::DeltaError::delta_path_does_not_exist("missing_table").into();
+        for (code, matches) in [
+            ("DELTA_PATH_DOES_NOT_EXIST", true),
+            ("DELTA_TABLE_NOT_FOUND", true),
+            ("DELTA_MISSING_TRANSACTION_LOG", true),
+            ("DELTA_TRUNCATED_TRANSACTION_LOG", true),
+            ("DELTA_STATE_RECOVER_ERROR", false),
+        ] {
+            assert_eq!(
+                validate_expected_error(&error, &expected_error(code)).is_ok(),
+                matches
+            );
+        }
     }
 
     #[test]

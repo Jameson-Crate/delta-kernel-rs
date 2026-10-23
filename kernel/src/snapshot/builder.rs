@@ -13,7 +13,7 @@ use crate::metrics::events::SNAPSHOT_COMPLETED_SPAN;
 use crate::metrics::{MetricId, SnapshotLoadMetricContext, SnapshotLoadType};
 use crate::path::DELTA_LOG_DIR_WITH_SLASH;
 use crate::snapshot::{SnapshotHint, SnapshotRef};
-use crate::utils::{require, try_parse_uri, PhantomType};
+use crate::utils::{require, try_parse_uri_with_missing_path, PhantomType};
 use crate::{DeltaError, Engine, Error, KernelError, KernelResult, Result, Snapshot, Version};
 
 /// Marker for builders that load a snapshot from a table root.
@@ -320,8 +320,9 @@ impl<Mode> SnapshotBuilder<Mode> {
     ///
     /// # Errors
     ///
-    /// For builds without a snapshot hint, returns a [`DeltaError`] with the original cause if
-    /// parsing the table root fails. Other loading and validation failures use [`Error::Kernel`].
+    /// For builds without a snapshot hint, returns `DELTA_PATH_DOES_NOT_EXIST` if the local root
+    /// is absent or no transaction log is found. The original cause is retained. Invalid locations
+    /// and other loading and validation failures use [`Error::Kernel`].
     ///
     /// [`MetricEvent::SnapshotBuildSuccess`]: crate::metrics::MetricEvent::SnapshotBuildSuccess
     /// [`MetricEvent::SnapshotBuildFailure`]: crate::metrics::MetricEvent::SnapshotBuildFailure
@@ -396,8 +397,10 @@ impl<Mode> SnapshotBuilder<Mode> {
             let built_as_latest = version.is_none() || version == max_catalog_version;
 
             if let Some(table_root) = table_root {
-                let table_url = try_parse_uri(&table_root).map_err(|err| {
-                    DeltaError::delta_path_does_not_exist(&table_root).with_source(err)
+                let table_url = try_parse_uri_with_missing_path(&table_root, |error| {
+                    Error::Delta(
+                        DeltaError::delta_path_does_not_exist(&table_root).with_source(error),
+                    )
                 })?;
                 let log_segment = LogSegment::for_snapshot(
                     engine.storage_handler().as_ref(),
@@ -408,7 +411,13 @@ impl<Mode> SnapshotBuilder<Mode> {
                     effective_version,
                     metric_context.clone(),
                     cancellation_token.as_ref(),
-                )?;
+                )
+                .map_err(|error| match error.without_backtrace() {
+                    KernelError::EmptyLog => Error::Delta(
+                        DeltaError::delta_path_does_not_exist(&table_root).with_source(error),
+                    ),
+                    _ => Error::Kernel(error),
+                })?;
                 Snapshot::try_new_from_log_segment(
                     table_url,
                     log_segment,
@@ -600,6 +609,65 @@ pub(super) mod tests {
         assert!(matches!(
             error.source().unwrap().downcast_ref::<KernelError>(),
             Some(KernelError::InvalidTableLocation(_))
+        ));
+    }
+
+    #[rstest::rstest]
+    #[case("memory:///", false)]
+    #[case("memory:///", true)]
+    fn empty_log_returns_missing_table_error(#[case] root: &str, #[case] time_travel: bool) {
+        let (engine, _, _) = setup_test();
+        let mut builder = SnapshotBuilder::new_for(root);
+        if time_travel {
+            builder = builder.at_version(0);
+        }
+        let Error::Delta(error) = builder.build(engine.as_ref()).unwrap_err() else {
+            panic!("expected a missing-table Delta error");
+        };
+        assert_eq!(
+            error.condition(),
+            crate::DeltaErrorCondition::DeltaPathDoesNotExist
+        );
+        assert_eq!(error.parameters()[0].value(), root);
+        assert!(matches!(
+            error.source().unwrap().downcast_ref::<KernelError>(),
+            Some(KernelError::EmptyLog)
+        ));
+    }
+
+    #[rstest::rstest]
+    #[case(false)]
+    #[case(true)]
+    fn existing_local_root_without_log_returns_missing_table_error(#[case] file_url: bool) {
+        let directory = tempfile::tempdir().unwrap();
+        let root = if file_url {
+            url::Url::from_directory_path(directory.path())
+                .unwrap()
+                .to_string()
+        } else {
+            directory.path().to_string_lossy().into_owned()
+        };
+        let (engine, _, _) = setup_test();
+        let Error::Delta(error) = SnapshotBuilder::new_for(&root)
+            .build(engine.as_ref())
+            .unwrap_err()
+        else {
+            panic!("expected a missing-table Delta error");
+        };
+        assert_eq!(
+            error.condition(),
+            crate::DeltaErrorCondition::DeltaPathDoesNotExist
+        );
+        assert_eq!(error.parameters()[0].value(), root);
+    }
+
+    #[test]
+    fn file_table_root_retains_kernel_location_error() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let (engine, _, _) = setup_test();
+        assert!(matches!(
+            SnapshotBuilder::new_for(file.path().to_str().unwrap()).build(engine.as_ref()),
+            Err(Error::Kernel(KernelError::InvalidTableLocation(_)))
         ));
     }
 
