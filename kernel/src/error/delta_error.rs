@@ -151,6 +151,14 @@ impl DeltaError {
         )
     }
 
+    /// Creates a schema-decoding failure for the unsupported persisted `data_type` token.
+    pub fn delta_parsing_unsupported_data_type(data_type: impl ToString) -> Self {
+        Self::new(
+            DeltaErrorCondition::DeltaParsingUnsupportedDataType,
+            delta_parameters!["dataType" => data_type],
+        )
+    }
+
     /// Creates a missing-partition-column failure for `column_name`, with `schema_map` listing
     /// the logical schema fields available to resolve it.
     pub fn delta_partition_column_not_found(

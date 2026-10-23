@@ -21,7 +21,7 @@ use crate::expressions::Scalar;
 #[cfg(feature = "adaptive-metadata-in-dev")]
 use crate::expressions::{ArrayData, StructData};
 use crate::schema::{
-    duplicate_delta_field_name, is_unsupported_delta_type_error, lazy_schema_ref, schema_ref,
+    duplicate_delta_field_name, lazy_schema_ref, schema_ref, unsupported_delta_type_name,
     SchemaRef, StructField, StructType, ToSchema as _,
 };
 #[cfg(feature = "adaptive-metadata-in-dev")]
@@ -486,9 +486,9 @@ impl Metadata {
     /// # Errors
     ///
     /// Returns `DELTA_DUPLICATE_COLUMNS_FOUND.EXISTING_SCHEMA` for duplicate logical names.
-    /// Returns [`KernelError::Schema`] when the schema exceeds the supported decoding depth or
-    /// declares a type the kernel doesn't support, or [`KernelError::MalformedJson`] for other
-    /// JSON decoding failures.
+    /// Returns `DELTA_PARSING_UNSUPPORTED_DATA_TYPE` for unsupported type tokens,
+    /// [`KernelError::Schema`] when decoding exceeds the supported nesting depth, and
+    /// [`KernelError::MalformedJson`] for other JSON decoding failures.
     #[internal_api]
     pub(crate) fn parse_schema(&self) -> crate::Result<StructType> {
         // TODO(#1896): Increase the supported nesting depth or use non-recursive schema decoding.
@@ -510,9 +510,9 @@ impl Metadata {
                 crate::DeltaError::delta_duplicate_existing_schema_columns(name)
                     .with_source(error)
                     .into()
-            } else if is_unsupported_delta_type_error(&error) {
-                KernelError::schema(error.to_string())
-                    .with_backtrace()
+            } else if let Some(data_type) = unsupported_delta_type_name(&error) {
+                crate::DeltaError::delta_parsing_unsupported_data_type(data_type)
+                    .with_source(error)
                     .into()
             } else {
                 crate::Error::Kernel(error.into())
@@ -2259,38 +2259,36 @@ mod tests {
     #[rstest]
     // Syntax error -> MalformedJson.
     #[case::malformed_syntax("{", "MalformedJson")]
-    // Data error lacking the unsupported-type prefix (invalid decimal) -> MalformedJson, NOT
-    // Schema: the reclassification must not fire for every is_data error.
+    // Invalid decimal syntax remains a JSON decoding failure.
     #[case::malformed_bad_decimal(
         r#"{"type":"struct","fields":[{"name":"t","type":"decimal(nope)","nullable":true,"metadata":{}}]}"#,
         "MalformedJson"
     )]
     // Regression guard: a well-formed schema whose wrong-typed field value echoes the prefix must
     // stay MalformedJson. `nullable` is a bool, so a string value is an is_data error whose message
-    // *contains* the prefix; matching by `starts_with` keeps it out of the Schema arm.
+    // *contains* the prefix, but does not originate from the type decoder.
     #[case::malformed_value_echoes_prefix(
         r#"{"type":"struct","fields":[{"name":"t","type":"string","nullable":"Unsupported Delta table type","metadata":{}}]}"#,
         "MalformedJson"
     )]
-    // Unsupported primitive types -> Schema.
+    // Unsupported primitive types carry their persisted token.
     #[case::unsupported_time(
         r#"{"type":"struct","fields":[{"name":"t","type":"time(6)","nullable":true,"metadata":{}}]}"#,
-        "Schema"
+        "time(6)"
     )]
     #[case::unsupported_interval(
         r#"{"type":"struct","fields":[{"name":"t","type":"interval week","nullable":true,"metadata":{}}]}"#,
-        "Schema"
+        "interval week"
     )]
-    // Unsupported primitive nested inside a struct field -> Schema (reclassification is
-    // position-agnostic, not limited to top-level columns).
+    // Nested type errors retain the rejected token.
     #[case::unsupported_nested(
         r#"{"type":"struct","fields":[{"name":"t","type":{"type":"struct","fields":[{"name":"inner","type":"time(6)","nullable":true,"metadata":{}}]},"nullable":true,"metadata":{}}]}"#,
-        "Schema"
+        "time(6)"
     )]
-    // Unknown complex type -> Schema.
+    // Unknown complex types use the same condition as primitive tokens.
     #[case::unsupported_complex(
         r#"{"type":"struct","fields":[{"name":"t","type":{"type":"matrix"},"nullable":true,"metadata":{}}]}"#,
-        "Schema"
+        "matrix"
     )]
     fn parse_schema_error_classification(
         #[case] schema_string: &str,
@@ -2300,26 +2298,34 @@ mod tests {
             schema_string: schema_string.to_string(),
             ..Default::default()
         };
-        // Error conversion captures a backtrace only when enabled, so normalize both forms before
-        // checking the underlying error.
-        let crate::Error::Kernel(error) = metadata.parse_schema().unwrap_err() else {
-            panic!("expected kernel schema decoding error");
-        };
-        let error = match error {
-            KernelError::Backtraced { source, .. } => *source,
-            error => error,
-        };
-        match expected_error {
-            "MalformedJson" => {
-                assert!(
-                    matches!(error, KernelError::MalformedJson(_)),
-                    "got: {error:?}"
-                )
-            }
-            "Schema" => {
-                assert!(matches!(error, KernelError::Schema(_)), "got: {error:?}")
-            }
-            other => panic!("unknown expected_error discriminant: {other}"),
+        let error = metadata.parse_schema().unwrap_err();
+        if expected_error == "MalformedJson" {
+            let crate::Error::Kernel(error) = error else {
+                panic!("expected malformed JSON, got {error:?}");
+            };
+            let error = match error {
+                KernelError::Backtraced { source, .. } => *source,
+                error => error,
+            };
+            assert!(
+                matches!(error, KernelError::MalformedJson(_)),
+                "got: {error:?}"
+            );
+        } else {
+            let crate::Error::Delta(error) = error else {
+                panic!("expected unsupported type, got {error:?}");
+            };
+            assert_eq!(
+                error.condition(),
+                crate::DeltaErrorCondition::DeltaParsingUnsupportedDataType
+            );
+            assert_eq!(error.sql_state(), Some("KD009"));
+            assert_eq!(error.parameters()[0].name(), "dataType");
+            assert_eq!(error.parameters()[0].value(), expected_error);
+            assert!(std::error::Error::source(&error)
+                .unwrap()
+                .downcast_ref::<serde_json::Error>()
+                .is_some());
         }
     }
 

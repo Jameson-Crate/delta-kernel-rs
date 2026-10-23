@@ -739,12 +739,14 @@ pub(super) mod tests {
         let result = SnapshotBuilder::new_for(table_root.clone()).build(engine);
         assert!(result.is_err());
 
-        let err = result.unwrap_err();
-        let err_msg = err.to_string();
-        assert!(
-            err_msg.contains("Unsupported Delta table type: 'interval year to second'"),
-            "Expected clear error message about unsupported type, got: {err_msg}"
+        let crate::Error::Delta(error) = result.unwrap_err() else {
+            panic!("expected unsupported schema type");
+        };
+        assert_eq!(
+            error.condition(),
+            crate::DeltaErrorCondition::DeltaParsingUnsupportedDataType
         );
+        assert_eq!(error.parameters()[0].value(), "interval year to second");
 
         Ok(())
     }

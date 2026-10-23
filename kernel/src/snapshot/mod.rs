@@ -1781,6 +1781,21 @@ mod tests {
         "42711",
         "value"
     )]
+    #[case::unsupported_primitive(
+        json!("time(6)"),
+        crate::DeltaErrorCondition::DeltaParsingUnsupportedDataType,
+        "KD009", "time(6)"
+    )]
+    #[case::unsupported_complex(
+        json!({"type": "matrix"}),
+        crate::DeltaErrorCondition::DeltaParsingUnsupportedDataType,
+        "KD009", "matrix"
+    )]
+    #[case::unsupported_quoted_token(
+        json!("unknown'type"),
+        crate::DeltaErrorCondition::DeltaParsingUnsupportedDataType,
+        "KD009", "unknown'type"
+    )]
     #[tokio::test]
     async fn snapshot_rejects_invalid_schema(
         #[values(false, true)] incremental: bool,
