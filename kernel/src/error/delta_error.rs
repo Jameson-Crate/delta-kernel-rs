@@ -104,6 +104,25 @@ impl DeltaError {
         )
     }
 
+    /// Creates a history-gap failure for the diagnostic `version_list`, bounded by `start_version`
+    /// and `end_version`, while loading `version_to_load`.
+    pub fn delta_versions_not_contiguous(
+        version_list: impl ToString,
+        start_version: crate::Version,
+        end_version: crate::Version,
+        version_to_load: crate::Version,
+    ) -> Self {
+        Self::new(
+            DeltaErrorCondition::DeltaVersionsNotContiguous,
+            delta_parameters![
+                "versionList" => version_list,
+                "startVersion" => start_version,
+                "endVersion" => end_version,
+                "versionToLoad" => version_to_load,
+            ],
+        )
+    }
+
     /// Creates an error without a diagnostic cause and captures its backtrace.
     ///
     /// `parameters` must contain exactly [`DeltaErrorCondition::parameter_names`], in that order.

@@ -7,7 +7,7 @@ use tracing::{info, instrument};
 
 use crate::cancellation::CancellationTokenRef;
 use crate::log_path::LogPath;
-use crate::log_segment::{validate_catalog_managed_log_tail, LogSegment};
+use crate::log_segment::{validate_snapshot_log_tail, LogSegment};
 use crate::log_segment_files::CheckpointHandling;
 use crate::metrics::events::SNAPSHOT_COMPLETED_SPAN;
 use crate::metrics::{MetricId, SnapshotLoadMetricContext, SnapshotLoadType};
@@ -323,7 +323,8 @@ impl<Mode> SnapshotBuilder<Mode> {
     /// For builds without a snapshot hint, returns `DELTA_PATH_DOES_NOT_EXIST` if the local root
     /// is absent or no transaction log is found. The original cause is retained. Invalid locations
     /// use [`Error::Kernel`]. Missing reconstruction files after a known checkpoint return
-    /// `DELTA_LOG_FILE_NOT_FOUND` with the target version, checkpoint, and log root.
+    /// `DELTA_LOG_FILE_NOT_FOUND` with the target version, checkpoint, and log root. Gaps within
+    /// required commits or ordered catalog tails return `DELTA_VERSIONS_NOT_CONTIGUOUS`.
     ///
     /// [`MetricEvent::SnapshotBuildSuccess`]: crate::metrics::MetricEvent::SnapshotBuildSuccess
     /// [`MetricEvent::SnapshotBuildFailure`]: crate::metrics::MetricEvent::SnapshotBuildFailure
@@ -469,8 +470,8 @@ impl<Mode> SnapshotBuilder<Mode> {
         version: Option<Version>,
         max_catalog_version: Option<Version>,
         log_tail: &[crate::path::ParsedLogPath],
-    ) -> KernelResult<()> {
-        validate_catalog_managed_log_tail(version, max_catalog_version, log_tail)
+    ) -> Result<()> {
+        validate_snapshot_log_tail(version, max_catalog_version, log_tail)
     }
 
     /// Post-build validation: catalog-managed tables must have max_catalog_version, and
@@ -1273,12 +1274,22 @@ pub(super) mod tests {
                 .with_max_catalog_version(mcv)
                 .build(engine.as_ref());
 
-            assert!(matches!(
-                result,
-                Err(delta_kernel::Error::Kernel(
-                    KernelError::LogTailVersionsNotContiguous { .. }
-                ))
-            ));
+            if log_tail_versions == [1, 3] {
+                let delta_kernel::Error::Delta(error) = result.unwrap_err() else {
+                    panic!("expected non-contiguous versions");
+                };
+                assert_eq!(
+                    error.condition(),
+                    delta_kernel::DeltaErrorCondition::DeltaVersionsNotContiguous
+                );
+            } else {
+                assert!(matches!(
+                    result,
+                    Err(delta_kernel::Error::Kernel(
+                        KernelError::LogTailVersionsNotContiguous { .. }
+                    ))
+                ));
+            }
 
             Ok(())
         }

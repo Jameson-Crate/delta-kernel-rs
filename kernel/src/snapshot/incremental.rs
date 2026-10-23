@@ -1283,10 +1283,13 @@ mod tests {
 
         // ===== THEN =====
         let error = updated.expect_err("the missing commit must not be hidden by the checkpoint");
-        assert!(matches!(
-            error,
-            delta_kernel::Error::Kernel(KernelError::MissingVersion(3))
-        ));
+        let delta_kernel::Error::Delta(error) = error else {
+            panic!("expected non-contiguous versions");
+        };
+        assert_eq!(
+            error.condition(),
+            delta_kernel::DeltaErrorCondition::DeltaVersionsNotContiguous
+        );
 
         Ok(())
     }

@@ -345,6 +345,9 @@ fn validate_expected_error(
                             | "DELTA_MISSING_TRANSACTION_LOG"
                             | "DELTA_TRUNCATED_TRANSACTION_LOG"
                     ))
+                || (error.condition()
+                    == delta_kernel::DeltaErrorCondition::DeltaVersionsNotContiguous
+                    && expected.error_code == "DELTA_VERSIONS_NOT_CONTIGUOUS.GENERIC")
         }
         _ => false,
     };
@@ -556,6 +559,17 @@ mod tests {
                 matches
             );
         }
+    }
+
+    #[test]
+    fn version_gap_matches_legacy_workload_category() {
+        let error = delta_kernel::DeltaError::delta_versions_not_contiguous("0, 2", 0, 2, 2).into();
+        assert!(validate_expected_error(
+            &error,
+            &expected_error("DELTA_VERSIONS_NOT_CONTIGUOUS.GENERIC")
+        )
+        .is_ok());
+        assert!(validate_expected_error(&error, &expected_error("DELTA_TABLE_NOT_FOUND")).is_err());
     }
 
     #[test]

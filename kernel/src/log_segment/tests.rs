@@ -5810,3 +5810,81 @@ fn snapshot_missing_replay_file_preserves_its_classification(
     ));
     Ok(())
 }
+
+#[rstest]
+#[case::from_zero(None, vec![0, 1, 3], None, 3)]
+#[case::after_checkpoint(Some(2), vec![3, 4, 6], Some(6), 6)]
+#[tokio::test]
+async fn snapshot_commit_gap_reports_full_versions_and_target(
+    #[case] checkpoint: Option<Version>,
+    #[case] versions: Vec<Version>,
+    #[case] requested: Option<Version>,
+    #[case] target: Version,
+) -> crate::Result<()> {
+    let paths: Vec<_> = checkpoint
+        .into_iter()
+        .map(|v| delta_path_for_version(v, "checkpoint.parquet"))
+        .chain(versions.iter().map(|v| delta_path_for_version(*v, "json")))
+        .collect();
+    let (storage, log_root) = build_log_with_paths_and_checkpoint(&paths, None).await;
+    let crate::Error::Delta(error) =
+        LogSegment::for_snapshot_impl(storage.as_ref(), log_root, vec![], None, requested, None)
+            .unwrap_err()
+    else {
+        panic!("expected a snapshot history gap");
+    };
+    assert_eq!(
+        error.condition(),
+        crate::DeltaErrorCondition::DeltaVersionsNotContiguous
+    );
+    assert_eq!(error.sql_state(), Some("KD00C"));
+    assert_eq!(error.parameters()[0].value(), versions.iter().join(", "));
+    assert_eq!(
+        error.parameters()[1].value(),
+        versions.first().unwrap().to_string()
+    );
+    assert_eq!(
+        error.parameters()[2].value(),
+        versions.last().unwrap().to_string()
+    );
+    assert_eq!(error.parameters()[3].value(), target.to_string());
+    assert!(matches!(
+        error.source().unwrap().downcast_ref::<KernelError>(),
+        Some(KernelError::MissingVersion(_))
+    ));
+    Ok(())
+}
+
+#[rstest]
+#[case::gap(vec![1, 3], true)]
+#[case::duplicate(vec![1, 1], false)]
+#[case::reversed(vec![3, 1], false)]
+#[case::gap_then_reversed(vec![1, 3, 2], false)]
+fn snapshot_catalog_tail_classifies_only_ordered_gaps(
+    #[case] versions: Vec<Version>,
+    #[case] delta: bool,
+) {
+    let tail = staged_commit_log_paths(&versions);
+    let maximum = versions.iter().max().copied();
+    let error = validate_snapshot_log_tail(None, maximum, &tail).unwrap_err();
+    if delta {
+        let crate::Error::Delta(error) = error else {
+            panic!("expected a catalog gap");
+        };
+        assert_eq!(
+            error.condition(),
+            crate::DeltaErrorCondition::DeltaVersionsNotContiguous
+        );
+        assert_eq!(error.parameters()[0].value(), "1, 3");
+        assert_eq!(error.parameters()[3].value(), "3");
+    } else {
+        assert!(matches!(
+            error,
+            crate::Error::Kernel(KernelError::LogTailVersionsNotContiguous { .. })
+        ));
+    }
+    assert!(matches!(
+        validate_catalog_managed_log_tail(None, maximum, &tail),
+        Err(KernelError::LogTailVersionsNotContiguous { .. })
+    ));
+}

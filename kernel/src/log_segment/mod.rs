@@ -166,6 +166,45 @@ pub(crate) fn validate_catalog_managed_log_tail(
     )
 }
 
+/// Validates a snapshot's catalog tail, reporting genuine gaps separately from invalid ordering
+/// and catalog bounds. Generic range discovery retains its kernel-error contract.
+pub(crate) fn validate_snapshot_log_tail(
+    requested: Option<Version>,
+    maximum: Option<Version>,
+    tail: &[ParsedLogPath],
+) -> crate::Result<()> {
+    validate_catalog_managed_log_tail(requested, maximum, tail).map_err(|error| {
+        let bounds_valid = validate_catalog_managed_versions(
+            requested,
+            maximum,
+            tail.iter()
+                .any(|path| path.file_type == LogPathFileType::StagedCommit),
+            tail.last().map(|path| path.version),
+        )
+        .is_ok();
+        if matches!(
+            error.without_backtrace(),
+            KernelError::LogTailVersionsNotContiguous { .. }
+        ) && bounds_valid
+            && tail
+                .windows(2)
+                .all(|pair| pair[0].version < pair[1].version)
+        {
+            if let (Some(first), Some(last)) = (tail.first(), tail.last()) {
+                return DeltaError::delta_versions_not_contiguous(
+                    tail.iter().map(|path| path.version).join(", "),
+                    first.version,
+                    last.version,
+                    requested.or(maximum).unwrap_or(last.version),
+                )
+                .with_source(error)
+                .into();
+            }
+        }
+        Error::Kernel(error)
+    })
+}
+
 /// Validate catalog version bounds against the staged commits available to the caller.
 pub(crate) fn validate_catalog_managed_versions(
     requested_version: Option<Version>,
@@ -345,8 +384,8 @@ impl LogSegment {
         Ok(log_segment)
     }
 
-    /// Assembles snapshot history, classifying missing files only when a replay checkpoint is
-    /// known. `replay_checkpoint` supplies the retained checkpoint during an incremental update.
+    /// Assembles snapshot history, distinguishing internal version gaps from missing files after
+    /// a known checkpoint. `replay_checkpoint` supplies the retained incremental checkpoint.
     pub(crate) fn try_new_for_snapshot(
         listed: LogSegmentFiles,
         log_root: Url,
@@ -365,11 +404,39 @@ impl LogSegment {
             .map(|path| path.version)
             .max(listed.checkpoint_parts.first().map(|path| path.version));
         let version = target.or(latest);
+        let commits = listed
+            .ascending_commit_files
+            .iter()
+            .filter(|path| checkpoint.is_none_or(|v| path.version > v));
+        let gap = commits
+            .clone()
+            .tuple_windows()
+            .any(|(first, second)| {
+                first
+                    .version
+                    .checked_add(1)
+                    .is_some_and(|next| next < second.version)
+            })
+            .then(|| {
+                let versions = commits.map(|path| path.version).collect_vec();
+                match (versions.first(), versions.last(), version) {
+                    (Some(first), Some(last), Some(target)) => {
+                        Some(DeltaError::delta_versions_not_contiguous(
+                            versions.iter().join(", "),
+                            *first,
+                            *last,
+                            target,
+                        ))
+                    }
+                    _ => None,
+                }
+            })
+            .flatten();
         let missing_after_checkpoint = checkpoint.and_then(|v| v.checked_add(1));
         let missing_at_end = latest.and_then(|v| v.checked_add(1));
         Self::try_new(listed, log_root.clone(), target, hint).map_err(|error| {
-            match (error.without_backtrace(), checkpoint, version) {
-                (KernelError::MissingVersion(missing), Some(checkpoint), Some(version))
+            match (error.without_backtrace(), checkpoint, version, gap) {
+                (KernelError::MissingVersion(missing), Some(checkpoint), Some(version), _)
                     if Some(*missing) == missing_after_checkpoint
                         || (target > latest && Some(*missing) == missing_at_end) =>
                 {
@@ -377,6 +444,7 @@ impl LogSegment {
                         .with_source(error)
                         .into()
                 }
+                (KernelError::MissingVersion(_), _, _, Some(gap)) => gap.with_source(error).into(),
                 _ => Error::Kernel(error),
             }
         })
