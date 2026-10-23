@@ -334,10 +334,10 @@ fn validate_expected_error(
     actual: &delta_kernel::Error,
     expected: &ExpectedError,
 ) -> KernelResult<(), String> {
-    let matches = match actual {
-        delta_kernel::Error::Kernel(error) => expected_error_matches(expected, error),
-        delta_kernel::Error::Delta(error) => {
-            error.condition().name() == expected.error_code
+    let matches =
+        match actual {
+            delta_kernel::Error::Kernel(error) => expected_error_matches(expected, error),
+            delta_kernel::Error::Delta(error) => error.condition().name() == expected.error_code
                 || (error.condition() == delta_kernel::DeltaErrorCondition::DeltaPathDoesNotExist
                     && matches!(
                         expected.error_code.as_str(),
@@ -348,9 +348,11 @@ fn validate_expected_error(
                 || (error.condition()
                     == delta_kernel::DeltaErrorCondition::DeltaVersionsNotContiguous
                     && expected.error_code == "DELTA_VERSIONS_NOT_CONTIGUOUS.GENERIC")
-        }
-        _ => false,
-    };
+                || (error.condition()
+                    == delta_kernel::DeltaErrorCondition::DeltaDuplicateColumnsFoundExistingSchema
+                    && expected.error_code == "COLUMN_ALREADY_EXISTS"),
+            _ => false,
+        };
     if matches {
         debug!(
             "Got expected error '{}' with message: {:?}\nKernel error: {}",
@@ -660,6 +662,22 @@ mod tests {
             &expected_error("COLUMN_ALREADY_EXISTS"),
             &Error::MalformedJson(malformed_json)
         ));
+    }
+
+    #[test]
+    fn column_already_exists_accepts_delta_duplicate_existing_schema() {
+        let error = delta_kernel::DeltaError::delta_duplicate_existing_schema_columns("id").into();
+        assert!(validate_expected_error(&error, &expected_error("COLUMN_ALREADY_EXISTS")).is_ok());
+        assert!(validate_expected_error(
+            &error,
+            &expected_error("DELTA_DUPLICATE_COLUMNS_FOUND.EXISTING_SCHEMA")
+        )
+        .is_ok());
+        assert!(validate_expected_error(
+            &error,
+            &expected_error("DELTA_PARSING_UNSUPPORTED_DATA_TYPE")
+        )
+        .is_err());
     }
 
     #[test]

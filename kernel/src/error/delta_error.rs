@@ -143,6 +143,14 @@ impl DeltaError {
         )
     }
 
+    /// Creates a persisted-schema failure for the rejected duplicate logical field name.
+    pub fn delta_duplicate_existing_schema_columns(duplicate_columns: impl ToString) -> Self {
+        Self::new(
+            DeltaErrorCondition::DeltaDuplicateColumnsFoundExistingSchema,
+            delta_parameters!["duplicateCols" => duplicate_columns],
+        )
+    }
+
     /// Creates a missing-partition-column failure for `column_name`, with `schema_map` listing
     /// the logical schema fields available to resolve it.
     pub fn delta_partition_column_not_found(

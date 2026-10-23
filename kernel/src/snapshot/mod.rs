@@ -1771,6 +1771,67 @@ mod tests {
         Ok(())
     }
 
+    #[rstest]
+    #[case::duplicate_schema(
+        json!({"type": "struct", "fields": [
+            {"name": "Value", "type": "string", "nullable": true, "metadata": {}},
+            {"name": "value", "type": "string", "nullable": true, "metadata": {}}
+        ]}),
+        crate::DeltaErrorCondition::DeltaDuplicateColumnsFoundExistingSchema,
+        "42711",
+        "value"
+    )]
+    #[tokio::test]
+    async fn snapshot_rejects_invalid_schema(
+        #[values(false, true)] incremental: bool,
+        #[values("field", "array", "map_key", "map_value")] container: &str,
+        #[case] field_type: serde_json::Value,
+        #[case] condition: crate::DeltaErrorCondition,
+        #[case] sql_state: &str,
+        #[case] parameter: &str,
+    ) -> crate::Result<()> {
+        let table_root = "memory:///schema_validation/";
+        let store = Arc::new(InMemory::new());
+        let engine = SyncEngine::new_with_store(store.clone());
+        commit(
+            table_root,
+            store.as_ref(),
+            0,
+            vec![
+                create_protocol(false, None),
+                create_metadata(None, None, None, None, false),
+            ],
+        )
+        .await;
+        let base = Snapshot::builder_for(table_root).build(&engine)?;
+        let field_type = match container {
+            "array" => json!({"type": "array", "elementType": field_type, "containsNull": true}),
+            "map_key" => {
+                json!({"type": "map", "keyType": field_type, "valueType": "string", "valueContainsNull": true})
+            }
+            "map_value" => {
+                json!({"type": "map", "keyType": "string", "valueType": field_type, "valueContainsNull": true})
+            }
+            _ => field_type,
+        };
+        let schema = json!({"type": "struct", "fields": [{"name": "outer", "type": field_type, "nullable": true, "metadata": {}}]});
+        let metadata = create_metadata(None, Some(&schema.to_string()), None, None, false);
+        commit(table_root, store.as_ref(), 1, vec![metadata]).await;
+        let result = if incremental {
+            Snapshot::builder_from(base).build(&engine)
+        } else {
+            Snapshot::builder_for(table_root).build(&engine)
+        };
+        let crate::Error::Delta(error) = result.unwrap_err() else {
+            panic!("expected invalid persisted schema");
+        };
+        assert_eq!(error.condition(), condition);
+        assert_eq!(error.sql_state(), Some(sql_state));
+        assert_eq!(error.parameters()[0].value(), parameter);
+        assert!(std::error::Error::source(&error).is_some());
+        Ok(())
+    }
+
     fn create_basic_commit(ict_enabled: bool, ict_config: Option<(String, String)>) -> String {
         let protocol = create_protocol(ict_enabled, None);
         let metadata = create_metadata(None, None, None, ict_config, false);

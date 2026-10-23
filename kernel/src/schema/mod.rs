@@ -49,6 +49,7 @@ pub(crate) mod void_utils;
 
 /// Prefix of the error message the schema deserializers emit for an unsupported type.
 const UNSUPPORTED_DELTA_TYPE_ERROR_PREFIX: &str = "Unsupported Delta table type";
+const DUPLICATE_FIELD_NAME_ERROR_PREFIX: &str = "Duplicate field name (case-insensitive)";
 
 /// Builds the serde custom error for a Delta type the kernel does not support. Pairs with
 /// [`is_unsupported_delta_type_error`] for detecting whether a serde error is this kind.
@@ -63,6 +64,19 @@ pub(crate) fn is_unsupported_delta_type_error(error: &serde_json::Error) -> bool
         && error
             .to_string()
             .starts_with(UNSUPPORTED_DELTA_TYPE_ERROR_PREFIX)
+}
+
+/// Recovers the rejected logical name from the duplicate-field diagnostic emitted by
+/// `StructType::try_new` through serde. Other schema and JSON errors are left unclassified.
+pub(crate) fn duplicate_delta_field_name(error: &serde_json::Error) -> Option<String> {
+    if !error.is_data() {
+        return None;
+    }
+    let message = error.to_string();
+    let prefix = format!("Schema error: {DUPLICATE_FIELD_NAME_ERROR_PREFIX}: '");
+    let name = message.strip_prefix(&prefix)?;
+    let (name, _) = name.rsplit_once('\'')?;
+    Some(name.to_string())
 }
 
 pub type Schema = StructType;
@@ -906,7 +920,7 @@ impl StructType {
             let key = field.name.to_lowercase();
             if !seen_lowercase_names.insert(key) {
                 return Err(KernelError::schema(format!(
-                    "Duplicate field name (case-insensitive): '{}'",
+                    "{DUPLICATE_FIELD_NAME_ERROR_PREFIX}: '{}'",
                     field.name
                 )));
             }
