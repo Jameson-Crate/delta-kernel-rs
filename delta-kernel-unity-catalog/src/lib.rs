@@ -64,16 +64,18 @@ pub fn log_tail_from_commits(
 /// # Errors
 ///
 /// Returns an error if the response's location is not a valid URL, if [`log_tail_from_commits`]
-/// fails, or if `latest_table_version` is negative.
-pub fn snapshot_builder_from_load_table(resp: &LoadTableResponse) -> KernelResult<SnapshotBuilder> {
+/// fails. A negative `latest_table_version` returns `DELTA_VERSION_INVALID` with its signed value.
+pub fn snapshot_builder_from_load_table(
+    resp: &LoadTableResponse,
+) -> delta_kernel::Result<SnapshotBuilder> {
     let table_root = Url::parse(&resp.metadata.location)
         .map_err(|e| KernelError::generic(format!("invalid table location: {e}")))?;
     let log_tail = log_tail_from_commits(&resp.commits, table_root.clone())?;
     let mut builder = Snapshot::builder_for(table_root).with_log_tail(log_tail);
     if let Some(version) = resp.latest_table_version {
-        let max_catalog_version: u64 = version
-            .try_into()
-            .map_err(|_| KernelError::generic("catalog reported a negative table version"))?;
+        let max_catalog_version: u64 = version.try_into().map_err(|error| {
+            delta_kernel::DeltaError::delta_version_invalid(version).with_source(error)
+        })?;
         builder = builder.with_max_catalog_version(max_catalog_version);
     }
     Ok(builder)
@@ -154,17 +156,45 @@ mod tests {
         client.load_table_response("test_table", location).unwrap()
     }
 
-    #[test]
-    fn snapshot_builder_from_load_table_rejects_negative_version() {
-        let resp = load_table_response("memory:///my_table", -1);
-        let err = snapshot_builder_from_load_table(&resp).unwrap_err();
-        assert!(err.to_string().contains("negative table version"));
+    #[rstest]
+    fn snapshot_builder_from_load_table_rejects_negative_version(
+        #[values(-1, -2, i64::MIN)] version: i64,
+    ) {
+        let resp = load_table_response("memory:///my_table", version);
+        let delta_kernel::Error::Delta(error) =
+            snapshot_builder_from_load_table(&resp).unwrap_err()
+        else {
+            panic!("expected invalid catalog version");
+        };
+        assert_eq!(
+            error.condition(),
+            delta_kernel::DeltaErrorCondition::DeltaVersionInvalid
+        );
+        assert_eq!(error.sql_state(), Some("42815"));
+        assert_eq!(error.parameters()[0].name(), "version");
+        assert_eq!(error.parameters()[0].value(), version.to_string());
+        assert!(std::error::Error::source(&error)
+            .unwrap()
+            .downcast_ref::<std::num::TryFromIntError>()
+            .is_some());
+    }
+
+    #[rstest]
+    fn snapshot_builder_from_load_table_accepts_non_negative_version(
+        #[values(0, 1, i64::MAX)] version: i64,
+    ) {
+        let resp = load_table_response("memory:///my_table", version);
+        assert!(snapshot_builder_from_load_table(&resp).is_ok());
     }
 
     #[test]
     fn snapshot_builder_from_load_table_rejects_invalid_location() {
         let resp = load_table_response("not a url", 0);
         let err = snapshot_builder_from_load_table(&resp).unwrap_err();
+        assert!(matches!(
+            err,
+            delta_kernel::Error::Kernel(KernelError::Generic(_))
+        ));
         assert!(err.to_string().contains("invalid table location"));
     }
 

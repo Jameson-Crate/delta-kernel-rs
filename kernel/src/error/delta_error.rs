@@ -171,6 +171,14 @@ impl DeltaError {
         )
     }
 
+    /// Creates an invalid-version failure, retaining the signed version supplied by the catalog.
+    pub fn delta_version_invalid(version: i64) -> Self {
+        Self::new(
+            DeltaErrorCondition::DeltaVersionInvalid,
+            delta_parameters!["version" => version],
+        )
+    }
+
     /// Creates an error without a diagnostic cause and captures its backtrace.
     ///
     /// `parameters` must contain exactly [`DeltaErrorCondition::parameter_names`], in that order.
