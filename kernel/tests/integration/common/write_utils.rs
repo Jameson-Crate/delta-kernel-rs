@@ -519,5 +519,4 @@ pub fn create_dv_update_transaction(
             engine,
             Box::new(delta_kernel::committer::FileSystemCommitter::new()),
         )
-        .map_err(delta_kernel::Error::Kernel)
 }

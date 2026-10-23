@@ -579,7 +579,7 @@ mod tests {
     };
     use crate::{Engine as _, KernelResult};
 
-    fn mock_snapshot(log_segment: LogSegment) -> KernelResult<Arc<Snapshot>> {
+    fn mock_snapshot(log_segment: LogSegment) -> crate::Result<Arc<Snapshot>> {
         let table_configuration = MockTableConfigurationBuilder::new()
             .with_schema(partitioned_schema())
             .with_partition_columns(["p"])
@@ -769,7 +769,7 @@ mod tests {
         #[case] shape: CheckpointShape,
         #[case] file_type: FileType,
         #[case] checkpoint_arm_tags: Vec<&'static str>,
-    ) -> KernelResult<()> {
+    ) -> crate::Result<()> {
         let segment = log_segment(
             log_root(),
             &["file:///_delta_log/00000000000000000001.json"],
@@ -795,7 +795,7 @@ mod tests {
         #[case] expect_native_partitions: bool,
         #[values(None, Some(struct_stats_schema()))] parsed_stats: Option<SchemaRef>,
         #[values(CheckpointType::Leaf, CheckpointType::Manifest)] checkpoint_type: CheckpointType,
-    ) -> KernelResult<()> {
+    ) -> crate::Result<()> {
         let stats = StatsOptions::all();
         let partition_values = PartitionValuesOptions::with_struct();
         let segment = log_segment(log_root(), &[], Some(checkpoint_path(FileType::Parquet)));
@@ -858,7 +858,7 @@ mod tests {
     }
 
     #[test]
-    fn metadata_plan_commits_only() -> KernelResult<()> {
+    fn metadata_plan_commits_only() -> crate::Result<()> {
         let segment = log_segment(
             log_root(),
             &["file:///_delta_log/00000000000000000001.json"],
@@ -881,7 +881,7 @@ mod tests {
         #[case] shape: CheckpointShape,
         #[case] file_type: FileType,
         #[case] checkpoint_arm_tags: Vec<&'static str>,
-    ) -> KernelResult<()> {
+    ) -> crate::Result<()> {
         let segment = log_segment(log_root(), &[], Some(checkpoint_path(file_type)));
         let scan = mock_snapshot(segment)?.scan_builder().build()?;
         let plan = scan.build_metadata_scan_plan(&shape)?.expect("non-empty");
@@ -890,7 +890,7 @@ mod tests {
     }
 
     #[test]
-    fn metadata_plan_empty_is_none() -> KernelResult<()> {
+    fn metadata_plan_empty_is_none() -> crate::Result<()> {
         let segment = log_segment(log_root(), &[], None);
         let scan = mock_snapshot(segment)?.scan_builder().build()?;
         assert!(scan.build_metadata_scan_plan(&no_checkpoint())?.is_none());
@@ -898,7 +898,7 @@ mod tests {
     }
 
     #[test]
-    fn metadata_plan_static_skip_all_is_none() -> KernelResult<()> {
+    fn metadata_plan_static_skip_all_is_none() -> crate::Result<()> {
         let segment = log_segment(log_root(), &[], None);
         let scan = mock_snapshot(segment)?
             .scan_builder()
@@ -915,7 +915,7 @@ mod tests {
     }
 
     #[test]
-    fn metadata_plan_executes_commit_dedup_with_sync_executor() -> KernelResult<()> {
+    fn metadata_plan_executes_commit_dedup_with_sync_executor() -> crate::Result<()> {
         let store = Arc::new(InMemory::new());
         futures::executor::block_on(async {
             store
@@ -986,7 +986,7 @@ mod tests {
     fn metadata_plan_executes_leaf_without_stats_parsed(
         #[case] lower_bound: i64,
         #[case] expected_rows: usize,
-    ) -> KernelResult<()> {
+    ) -> crate::Result<()> {
         let store = Arc::new(InMemory::new());
         // A single-row parquet checkpoint carrying an `add` with a JSON `stats` string but no
         // `stats_parsed` column.

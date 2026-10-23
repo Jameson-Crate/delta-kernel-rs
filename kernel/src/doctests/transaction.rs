@@ -97,7 +97,7 @@ pub struct SharedConfiguration;
 ///     remove_metadata: FilteredEngineData,
 ///     new_dv_descriptors: HashMap<String, DeletionVectorDescriptor>,
 ///     existing_data_files: impl Iterator<Item = KernelResult<FilteredEngineData>>,
-/// ) -> KernelResult<CommitResult> {
+/// ) -> delta_kernel::Result<CommitResult> {
 ///     let mut txn: Transaction<UpdateTable, Imperative> = txn;
 ///     txn.add_files(add_metadata);
 ///     txn.remove_files(remove_metadata);

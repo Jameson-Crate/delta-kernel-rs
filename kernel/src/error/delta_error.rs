@@ -123,6 +123,14 @@ impl DeltaError {
         )
     }
 
+    /// Creates a duplicate-partition-column failure with `duplicate_columns` as diagnostic names.
+    pub fn delta_duplicate_partition_columns(duplicate_columns: impl ToString) -> Self {
+        Self::new(
+            DeltaErrorCondition::DeltaDuplicateColumnsFoundPartitionColumns,
+            delta_parameters!["duplicateCols" => duplicate_columns],
+        )
+    }
+
     /// Creates an error without a diagnostic cause and captures its backtrace.
     ///
     /// `parameters` must contain exactly [`DeltaErrorCondition::parameter_names`], in that order.

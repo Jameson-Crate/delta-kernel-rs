@@ -445,23 +445,23 @@ impl Snapshot {
         &self,
         commit: ParsedLogPath,
         crc_delta: CrcDelta,
-    ) -> KernelResult<Self> {
+    ) -> crate::Result<Self> {
         require!(
             commit.is_commit(),
-            KernelError::internal_error(format!(
+            crate::Error::Kernel(KernelError::internal_error(format!(
                 "Cannot create post-commit Snapshot. Log file is not a commit file. \
                 Path: {}, Type: {:?}.",
                 commit.location.location, commit.file_type
-            ))
+            )))
         );
         let read_version = self.version();
         let new_version = commit.version;
         require!(
             new_version == read_version.wrapping_add(1),
-            KernelError::internal_error(format!(
+            crate::Error::Kernel(KernelError::internal_error(format!(
                 "Cannot create post-commit Snapshot. Log file version ({new_version}) does not \
                 equal Snapshot version ({read_version}) + 1."
-            ))
+            )))
         );
 
         let new_table_configuration = TableConfiguration::new_post_commit(
@@ -490,6 +490,7 @@ impl Snapshot {
             true, /* built_as_latest */
             self.skipped_new_checkpoints,
         )
+        .map_err(crate::Error::Kernel)
     }
 
     // ============================================================================
@@ -1723,6 +1724,46 @@ mod tests {
                 "createdTime": created_time.unwrap_or(1587968586154u64)
             }
         })
+    }
+
+    #[rstest]
+    #[tokio::test]
+    async fn snapshot_rejects_duplicate_partition_columns(
+        #[values(false, true)] incremental: bool,
+    ) -> crate::Result<()> {
+        let table_root = "memory:///partition_validation/";
+        let store = Arc::new(InMemory::new());
+        let engine = SyncEngine::new_with_store(store.clone());
+        commit(
+            table_root,
+            store.as_ref(),
+            0,
+            vec![
+                create_protocol(false, None),
+                create_metadata(None, None, None, None, false),
+            ],
+        )
+        .await;
+        let base = Snapshot::builder_for(table_root).build(&engine)?;
+        let mut metadata = create_metadata(None, None, None, None, false);
+        metadata["metaData"]["partitionColumns"] = json!(["value", "value"]);
+        commit(table_root, store.as_ref(), 1, vec![metadata]).await;
+        let result = if incremental {
+            Snapshot::builder_from(base).build(&engine)
+        } else {
+            Snapshot::builder_for(table_root).build(&engine)
+        };
+        let crate::Error::Delta(error) = result.unwrap_err() else {
+            panic!("expected duplicate partition columns");
+        };
+        assert_eq!(
+            error.condition(),
+            crate::DeltaErrorCondition::DeltaDuplicateColumnsFoundPartitionColumns
+        );
+        assert_eq!(error.sql_state(), Some("42711"));
+        assert_eq!(error.parameters()[0].value(), "value");
+        assert!(std::error::Error::source(&error).is_some());
+        Ok(())
     }
 
     fn create_basic_commit(ict_enabled: bool, ict_config: Option<(String, String)>) -> String {

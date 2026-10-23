@@ -140,7 +140,7 @@ fn update_table_txn_builder_build_with_committer_impl(
     builder: UpdateTableTransactionBuilder,
     extern_engine: &dyn ExternEngine,
     committer: Box<dyn Committer>,
-) -> KernelResult<Handle<ExclusiveUpdateTableTransaction>> {
+) -> delta_kernel::Result<Handle<ExclusiveUpdateTableTransaction>> {
     let engine = extern_engine.engine();
     let transaction = builder.build(engine.as_ref(), committer);
     Ok(Box::new(transaction?).into())
@@ -591,9 +591,9 @@ pub unsafe extern "C" fn update_table_txn_with_root_manifest_file(
 fn with_root_manifest_file_impl(
     txn: Transaction,
     file: &FileMeta,
-) -> KernelResult<Handle<ExclusiveUpdateTableTransaction>> {
+) -> delta_kernel::Result<Handle<ExclusiveUpdateTableTransaction>> {
     let path: &str = unsafe { TryFromStringSlice::try_from_slice(&file.path) }?;
-    let location = Url::parse(path)?;
+    let location = Url::parse(path).map_err(delta_kernel::KernelError::from)?;
     let size = file
         .size
         .try_into()

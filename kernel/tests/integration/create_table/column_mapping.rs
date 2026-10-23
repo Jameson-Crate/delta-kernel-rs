@@ -16,7 +16,6 @@ use delta_kernel::snapshot::Snapshot;
 use delta_kernel::table_features::{ColumnMappingMode, TableFeature};
 use delta_kernel::transaction::create_table::create_table;
 use delta_kernel::transaction::data_layout::DataLayout;
-use delta_kernel::KernelResult;
 use test_utils::{
     column_mapping_fixtures as fixtures, create_table_and_load_snapshot, test_table_setup,
 };
@@ -668,7 +667,7 @@ fn test_create_table_dup_physical_name(
     #[case] schema: StructType,
     #[case] expected_error_substring: Option<&str>,
     #[values("name", "id")] cm_mode: &str,
-) -> KernelResult<()> {
+) -> delta_kernel::Result<()> {
     let (_temp_dir, table_path, engine) = test_table_setup()?;
     let result = create_table(&table_path, Arc::new(schema), "Test/1.0", true)
         .with_table_properties([("delta.columnMapping.mode", cm_mode)])

@@ -134,7 +134,7 @@ async fn alter_table_commit_rejects_root_manifest() -> Result<(), Box<dyn std::e
 
     let error = txn.commit(&engine).unwrap_err();
     assert!(
-        matches!(&error, KernelError::InvalidTransactionState(message)
+        matches!(&error, delta_kernel::Error::Kernel(KernelError::InvalidTransactionState(message))
         if message == "ALTER TABLE cannot include manifest writes")
     );
     let fresh = Snapshot::builder_for(table_url).build(&engine)?;

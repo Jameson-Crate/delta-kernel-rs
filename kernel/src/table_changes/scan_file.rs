@@ -197,10 +197,10 @@ impl TableChangesScanFile {
 /// Transforms an iterator of [`TableChangesScanMetadata`] into an iterator of
 /// [`CdfScanFile`] by visiting the engine data.
 pub(crate) fn scan_metadata_to_scan_file(
-    scan_metadata: impl Iterator<Item = KernelResult<TableChangesScanMetadata>>,
-) -> impl Iterator<Item = KernelResult<CdfScanFile>> {
+    scan_metadata: impl Iterator<Item = crate::Result<TableChangesScanMetadata>>,
+) -> impl Iterator<Item = crate::Result<CdfScanFile>> {
     scan_metadata
-        .map(|scan_metadata| -> KernelResult<_> {
+        .map(|scan_metadata| -> crate::Result<_> {
             let scan_metadata = scan_metadata?;
             let callback: CdfScanCallback<Vec<CdfScanFile>> =
                 |context, scan_file| context.push(scan_file);

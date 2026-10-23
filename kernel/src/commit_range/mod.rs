@@ -133,7 +133,7 @@ impl CommitRange {
         engine: Arc<dyn Engine>,
         start_snapshot: Option<SnapshotRef>,
         actions: &[DeltaAction],
-    ) -> KernelResult<impl Iterator<Item = KernelResult<CommitAction>> + Send> {
+    ) -> KernelResult<impl Iterator<Item = crate::Result<CommitAction>> + Send> {
         if actions.is_empty() {
             return Err(KernelError::generic(
                 "at least one DeltaAction must be requested",
@@ -206,7 +206,7 @@ impl CommitActionsIterator {
     /// Commits below the anchor are validated/timestamped best-effort against only their own
     /// actions. Another solution is to walk the commit in ascending then reversing in the
     /// [`CommitOrdering::DescendingOrder`] scenario.
-    fn try_advance(&mut self, log_path: ParsedLogPath) -> KernelResult<CommitAction> {
+    fn try_advance(&mut self, log_path: ParsedLogPath) -> crate::Result<CommitAction> {
         let version = log_path.version;
         let commit_action = CommitAction::try_new(
             self.engine.as_ref(),
@@ -216,7 +216,12 @@ impl CommitActionsIterator {
             self.latest_protocol.clone(),
             self.latest_metadata.clone(),
         )
-        .map_err(|e| with_version_context(version, e))?;
+        .map_err(|error| match error {
+            crate::Error::Kernel(error) => {
+                crate::Error::Kernel(with_version_context(version, error))
+            }
+            delta => delta,
+        })?;
 
         match self.commit_ordering {
             CommitOrdering::AscendingOrder => {
@@ -248,7 +253,7 @@ fn with_version_context(version: Version, err: KernelError) -> KernelError {
 }
 
 impl Iterator for CommitActionsIterator {
-    type Item = KernelResult<CommitAction>;
+    type Item = crate::Result<CommitAction>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let log_path = self.log_path_iter.next()?;
@@ -364,7 +369,7 @@ mod tests {
         let collected = range
             .commits(engine, Some(anchor_snapshot), &actions)
             .unwrap()
-            .collect::<KernelResult<Vec<_>>>()
+            .collect::<crate::Result<Vec<_>>>()
             .unwrap();
 
         assert_eq!(collected.len(), 2, "yield one CommitAction per commit");
@@ -677,7 +682,7 @@ mod tests {
         engine: Arc<dyn Engine>,
         start_snapshot: Option<SnapshotRef>,
         actions: &[DeltaAction],
-    ) -> KernelResult<()> {
+    ) -> crate::Result<()> {
         for commit_res in range.commits(engine.clone(), start_snapshot, actions)? {
             let commit = commit_res?;
             for batch_res in commit.get_actions(engine.as_ref())? {
@@ -724,6 +729,9 @@ mod tests {
         let actions = [DeltaAction::Add, DeltaAction::Remove];
         let err = drain_commits(&range, engine, Some(anchor_snapshot), &actions)
             .expect_err("v=1 reader version must be rejected");
+        let crate::Error::Kernel(err) = err else {
+            panic!("expected kernel error");
+        };
         assert!(is_expected_err(&err), "unexpected error variant: {err:?}");
     }
 
@@ -960,7 +968,7 @@ mod tests {
         if expects_unsupported {
             let err = result.expect_err("commit-driven validation must reject");
             assert!(
-                matches!(err, KernelError::Unsupported(_)),
+                matches!(err, crate::Error::Kernel(KernelError::Unsupported(_))),
                 "expected KernelError::Unsupported, got: {err:?}",
             );
         } else {
@@ -989,7 +997,7 @@ mod tests {
         let v0_result = iter.next().expect("v=0 commit yield slot");
         match v0_result {
             Ok(_) => panic!("v=0 must reject during iter.next()"),
-            Err(KernelError::Unsupported(msg)) => {
+            Err(crate::Error::Kernel(KernelError::Unsupported(msg))) => {
                 assert!(msg.contains("futureFeature"), "got: {msg}")
             }
             Err(other) => panic!("expected KernelError::Unsupported, got: {other:?}"),

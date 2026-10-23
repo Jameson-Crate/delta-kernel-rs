@@ -957,14 +957,14 @@ impl TransactionBuilder<CreateTable> {
         self,
         engine: &dyn Engine,
         committer: Box<dyn Committer>,
-    ) -> KernelResult<CreateTableTransaction> {
+    ) -> crate::Result<CreateTableTransaction> {
         self.common_state.validate()?;
 
         // Validate path
         let table_url = try_parse_uri(&self.local_state.path)?;
 
         // Check if table already exists by looking for _delta_log directory
-        let delta_log_url = table_url.join("_delta_log/")?;
+        let delta_log_url = table_url.join("_delta_log/").map_err(KernelError::from)?;
         let storage = engine.storage_handler();
         ensure_table_does_not_exist(storage.as_ref(), &delta_log_url, &self.local_state.path)?;
 
@@ -1166,10 +1166,10 @@ mod tests {
     #[rstest]
     fn common_builder_state_preserves_data_change_through_empty_commit(
         #[values(false, true)] expected_data_change: bool,
-    ) -> KernelResult<()> {
-        let tempdir = tempfile::tempdir()?;
+    ) -> crate::Result<()> {
+        let tempdir = tempfile::tempdir().map_err(crate::KernelError::from)?;
         let table_path = tempdir.path().join("table");
-        std::fs::create_dir(&table_path)?;
+        std::fs::create_dir(&table_path).map_err(crate::KernelError::from)?;
         let engine = SyncEngine::new();
         let reporter = Arc::new(CapturingReporter::default());
         let _guard = install_thread_local_metrics_reporter(reporter.clone());

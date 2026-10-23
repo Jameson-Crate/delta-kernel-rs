@@ -22,10 +22,12 @@ deserializes the full batch into in-memory structs.
 
 ## Error Handling
 
-Kernel APIs return `KernelResult<T, E = KernelError>`, preserving `KernelError` by default while
-allowing helpers to specify another error type. `Result<T>` always uses the top-level `Error` enum.
-Converting a kernel error to that envelope requires `Error::Kernel` or `.map_err(Error::Kernel)`.
-There is no implicit `From<KernelError> for Error` conversion.
+`KernelResult<T, E = KernelError>` preserves `KernelError` by default. APIs that report structured
+Delta failures use `Result<T>`, whose top-level `Error` distinguishes `Delta` and `Kernel` errors.
+Snapshot builds, table-configuration construction, transaction builds and commits propagate this
+envelope. Commit-range and CDF iterators also yield it when validating persisted configuration.
+`?` converts `KernelError` into the envelope; explicit error returns use `Error::Kernel`.
+Foreign errors first convert through `KernelError`.
 
 Fallible kernel streams use `KernelResultIterator` and `KernelResultIteratorStatic`, including
 engine handlers and declarative-plan results. `ResultIterator` and `ResultIteratorStatic` yield
@@ -54,7 +56,7 @@ Built via `Snapshot::builder_for(url).build(engine)` (latest version) or
 `.at_version(v).build(engine)` (specific version). For catalog-managed tables,
 `.with_log_tail(commits)` supplies recent unpublished commits from the catalog and
 `.with_max_catalog_version(v)` caps the snapshot at the latest catalog-ratified version.
-`Snapshot::builder_from(snapshot)` returns an `IncrementalSnapshotBuilder` that reuses the input
+`Snapshot::builder_from(snapshot)` returns a `SnapshotBuilder<FromSnapshot>` that reuses the input
 snapshot. Its opt-in `skip_new_checkpoints()` mode keeps the input checkpoint and every commit in
 the update window so a snapshot-derived `CommitRange` can inspect them without another log
 listing.
@@ -183,7 +185,7 @@ all returned batches: the engine may split a single file across multiple batches
 
 ## Key Modules
 
-- `kernel/src/snapshot/`: `Snapshot`, `SnapshotBuilder`, `IncrementalSnapshotBuilder`, entry point
+- `kernel/src/snapshot/`: `Snapshot`, `SnapshotBuilder`, entry point
   for reads/writes
 - `kernel/src/scan/`: `Scan`, `ScanBuilder`, log replay, data skipping
 - `kernel/src/incremental_scan/`: `IncrementalScanBuilder`, streaming file-action diff

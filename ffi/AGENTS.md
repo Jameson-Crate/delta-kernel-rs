@@ -443,9 +443,11 @@ an opaque pointer when the API needs one.
 
 ### Error handling
 
-Rust helpers use `KernelResult<T>` and pass it to `IntoExternResult` to produce the C ABI's
-`ExternResult<T>`. Preserve `KernelError` variants through this conversion. `delta_kernel::Result<T>`
-uses the separate top-level `Error` envelope.
+Rust helpers pass `KernelResult<T>` or `delta_kernel::Result<T>` to `IntoExternResult` to produce
+the C ABI's `ExternResult<T>`. Match the underlying API's error envelope, including iterator items,
+so structured Delta errors propagate without conversion to generic kernel errors. Preserve
+`KernelError` variants through this conversion. The ABI maps Delta conditions to its existing
+error tags and renders their catalog messages.
 
 There are two error directions, with opposite message owners:
 
