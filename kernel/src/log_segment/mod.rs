@@ -40,8 +40,8 @@ use crate::EngineData;
 #[cfg(feature = "declarative-plans")]
 use crate::Scalar;
 use crate::{
-    Engine, FileMeta, KernelError, KernelResult, Predicate, PredicateRef, RowVisitor,
-    StorageHandler, Version,
+    DeltaError, Engine, Error, FileMeta, KernelError, KernelResult, Predicate, PredicateRef,
+    RowVisitor, StorageHandler, Version,
 };
 
 mod crc_replay;
@@ -345,6 +345,43 @@ impl LogSegment {
         Ok(log_segment)
     }
 
+    /// Assembles snapshot history, classifying missing files only when a replay checkpoint is
+    /// known. `replay_checkpoint` supplies the retained checkpoint during an incremental update.
+    pub(crate) fn try_new_for_snapshot(
+        listed: LogSegmentFiles,
+        log_root: Url,
+        target: Option<Version>,
+        hint: Option<LastCheckpointHint>,
+        replay_checkpoint: Option<Version>,
+    ) -> crate::Result<Self> {
+        let checkpoint = listed
+            .checkpoint_parts
+            .first()
+            .map(|path| path.version)
+            .or(replay_checkpoint);
+        let latest = listed
+            .ascending_commit_files
+            .last()
+            .map(|path| path.version)
+            .max(listed.checkpoint_parts.first().map(|path| path.version));
+        let version = target.or(latest);
+        let missing_after_checkpoint = checkpoint.and_then(|v| v.checked_add(1));
+        let missing_at_end = latest.and_then(|v| v.checked_add(1));
+        Self::try_new(listed, log_root.clone(), target, hint).map_err(|error| {
+            match (error.without_backtrace(), checkpoint, version) {
+                (KernelError::MissingVersion(missing), Some(checkpoint), Some(version))
+                    if Some(*missing) == missing_after_checkpoint
+                        || (target > latest && Some(*missing) == missing_at_end) =>
+                {
+                    DeltaError::delta_log_file_not_found(version, checkpoint, &log_root)
+                        .with_source(error)
+                        .into()
+                }
+                _ => Error::Kernel(error),
+            }
+        })
+    }
+
     /// Returns the checkpoint version from the `_last_checkpoint` hint
     pub(crate) fn last_checkpoint_version(&self) -> Option<Version> {
         self.last_checkpoint_metadata.as_ref().map(|m| m.version)
@@ -452,7 +489,7 @@ impl LogSegment {
         time_travel_version: impl Into<Option<Version>>,
         metric_context: SnapshotLoadMetricContext,
         cancellation_token: Option<&CancellationTokenRef>,
-    ) -> KernelResult<Self> {
+    ) -> crate::Result<Self> {
         let time_travel_version = time_travel_version.into();
         let start = std::time::Instant::now();
         let build = || {
@@ -493,7 +530,7 @@ impl LogSegment {
         checkpoint_hint: Option<LastCheckpointHint>,
         time_travel_version: Option<Version>,
         cancellation_token: Option<&CancellationTokenRef>,
-    ) -> KernelResult<Self> {
+    ) -> crate::Result<Self> {
         // The end_version is the time_travel_version, if present
         // TODO: When max catalog version is implemented, we would use that as end_version if
         // time_travel_version is not present
@@ -540,7 +577,13 @@ impl LogSegment {
             }
         };
 
-        LogSegment::try_new(listed_files, log_root, time_travel_version, checkpoint_hint)
+        Self::try_new_for_snapshot(
+            listed_files,
+            log_root,
+            time_travel_version,
+            checkpoint_hint,
+            None,
+        )
     }
 
     /// Constructs a [`LogSegment`] to be used for `TableChanges`. For a TableChanges between

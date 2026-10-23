@@ -87,6 +87,23 @@ impl DeltaError {
         )
     }
 
+    /// Creates a missing-history failure for `version`, replayed from `checkpoint_version` at
+    /// `log_path`. All three values describe the snapshot reconstruction that failed.
+    pub fn delta_log_file_not_found(
+        version: crate::Version,
+        checkpoint_version: crate::Version,
+        log_path: &url::Url,
+    ) -> Self {
+        Self::new(
+            DeltaErrorCondition::DeltaLogFileNotFound,
+            delta_parameters![
+                "version" => version,
+                "checkpointVersion" => checkpoint_version,
+                "logPath" => log_path,
+            ],
+        )
+    }
+
     /// Creates an error without a diagnostic cause and captures its backtrace.
     ///
     /// `parameters` must contain exactly [`DeltaErrorCondition::parameter_names`], in that order.

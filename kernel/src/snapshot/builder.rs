@@ -322,7 +322,8 @@ impl<Mode> SnapshotBuilder<Mode> {
     ///
     /// For builds without a snapshot hint, returns `DELTA_PATH_DOES_NOT_EXIST` if the local root
     /// is absent or no transaction log is found. The original cause is retained. Invalid locations
-    /// and other loading and validation failures use [`Error::Kernel`].
+    /// use [`Error::Kernel`]. Missing reconstruction files after a known checkpoint return
+    /// `DELTA_LOG_FILE_NOT_FOUND` with the target version, checkpoint, and log root.
     ///
     /// [`MetricEvent::SnapshotBuildSuccess`]: crate::metrics::MetricEvent::SnapshotBuildSuccess
     /// [`MetricEvent::SnapshotBuildFailure`]: crate::metrics::MetricEvent::SnapshotBuildFailure
@@ -412,11 +413,15 @@ impl<Mode> SnapshotBuilder<Mode> {
                     metric_context.clone(),
                     cancellation_token.as_ref(),
                 )
-                .map_err(|error| match error.without_backtrace() {
-                    KernelError::EmptyLog => Error::Delta(
-                        DeltaError::delta_path_does_not_exist(&table_root).with_source(error),
-                    ),
-                    _ => Error::Kernel(error),
+                .map_err(|error| match error {
+                    Error::Kernel(error)
+                        if matches!(error.without_backtrace(), KernelError::EmptyLog) =>
+                    {
+                        Error::Delta(
+                            DeltaError::delta_path_does_not_exist(&table_root).with_source(error),
+                        )
+                    }
+                    _ => error,
                 })?;
                 Snapshot::try_new_from_log_segment(
                     table_url,

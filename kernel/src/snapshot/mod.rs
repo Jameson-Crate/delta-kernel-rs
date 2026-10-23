@@ -313,7 +313,7 @@ impl Snapshot {
         metric_context: SnapshotLoadMetricContext,
         incremental_replay: IncrementalReplay,
         built_as_latest: bool,
-    ) -> KernelResult<Self> {
+    ) -> crate::Result<Self> {
         let PreparedSnapshot {
             table_configuration,
             crc,
@@ -347,7 +347,7 @@ impl Snapshot {
         metric_context: &SnapshotLoadMetricContext,
         incremental_replay: IncrementalReplay,
         built_as_latest: bool,
-    ) -> KernelResult<PreparedSnapshot> {
+    ) -> crate::Result<PreparedSnapshot> {
         Self::resolve_table_configuration_and_crc(
             location,
             log_segment,
@@ -374,7 +374,7 @@ impl Snapshot {
         engine: &dyn Engine,
         metric_context: &SnapshotLoadMetricContext,
         incremental_replay: IncrementalReplay,
-    ) -> KernelResult<PreparedSnapshot> {
+    ) -> crate::Result<PreparedSnapshot> {
         let pm_start = std::time::Instant::now();
 
         // Step 1: read the latest on-disk CRC and, if usable, advance it to the end version
@@ -401,9 +401,9 @@ impl Snapshot {
         };
 
         // Fresh snapshot creation requires both Protocol and Metadata to be present.
-        let fail = |e| {
+        let fail = |e: KernelError| {
             emit_protocol_metadata_load_failure(metric_context);
-            Err(e)
+            Err(e.into())
         };
         let (metadata, protocol) = match (metadata, protocol) {
             (Some(metadata), Some(protocol)) => (metadata, protocol),

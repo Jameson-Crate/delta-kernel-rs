@@ -112,7 +112,7 @@ impl Snapshot {
         checkpoint_handling: CheckpointHandling,
         built_as_latest: bool,
         cancellation_token: Option<&CancellationTokenRef>,
-    ) -> KernelResult<Arc<Self>> {
+    ) -> crate::Result<Arc<Self>> {
         let requested_version = target_version.into();
         let mut current_segment = None;
         let result = Self::try_new_from_impl(
@@ -153,7 +153,7 @@ impl Snapshot {
         built_as_latest: bool,
         cancellation_token: Option<&CancellationTokenRef>,
         current_segment: &mut Option<LogSegment>,
-    ) -> KernelResult<Arc<Self>> {
+    ) -> crate::Result<Arc<Self>> {
         let existing_snapshot_version = existing_snapshot.version();
         if let Some(requested_version) = requested_version {
             tracing::Span::current().record("version", requested_version);
@@ -163,10 +163,10 @@ impl Snapshot {
             }
             // Case B: incremental path only moves forward.
             if requested_version < existing_snapshot_version {
-                return Err(KernelError::Generic(format!(
+                return Err(crate::Error::Kernel(KernelError::Generic(format!(
                     "Requested snapshot version {requested_version} is older than snapshot \
                     hint version {existing_snapshot_version}"
-                )));
+                ))));
             }
         } else {
             tracing::Span::current().record("version", existing_snapshot_version);
@@ -194,7 +194,8 @@ impl Snapshot {
                     &existing_snapshot,
                     built_as_latest,
                     skipped_new_checkpoints,
-                );
+                )
+                .map_err(crate::Error::Kernel);
             }
             NewSegment::Rebuild(new_log_segment) => {
                 emit_log_segment_load(
@@ -328,7 +329,7 @@ impl Snapshot {
         requested_version: Option<Version>,
         checkpoint_handling: CheckpointHandling,
         cancellation_token: Option<&CancellationTokenRef>,
-    ) -> KernelResult<NewSegment> {
+    ) -> crate::Result<NewSegment> {
         let log_root = existing_log_segment.log_root.clone();
         let storage = engine.storage_handler();
 
@@ -369,7 +370,17 @@ impl Snapshot {
                 // Case C.1: caller requested a specific version (necessarily >
                 // existing_snapshot_version since cases A and B were handled above), but
                 // no such commit exists in the log.
-                Some(_) => Err(KernelError::MissingVersion(existing_snapshot_version + 1)),
+                Some(target) => {
+                    let error = KernelError::MissingVersion(existing_snapshot_version + 1);
+                    Err(match existing_log_segment.checkpoint_version {
+                        Some(checkpoint) => crate::DeltaError::delta_log_file_not_found(
+                            target, checkpoint, &log_root,
+                        )
+                        .with_source(error)
+                        .into(),
+                        None => crate::Error::Kernel(error),
+                    })
+                }
                 // Case C.2: no new commits and no explicit target; latest is existing.
                 None => Ok(NewSegment::Unchanged),
             };
@@ -383,16 +394,23 @@ impl Snapshot {
         // hint. If the new segment has a checkpoint, we will return it as is. Otherwise, we
         // will preserve last_checkpoint_metadata when merging the new log segment with the
         // old one.
-        let mut new_log_segment =
-            LogSegment::try_new(new_listed_files, log_root.clone(), requested_version, None)?;
+        let mut new_log_segment = LogSegment::try_new_for_snapshot(
+            new_listed_files,
+            log_root.clone(),
+            requested_version,
+            None,
+            existing_log_segment.checkpoint_version,
+        )?;
 
         let new_end_version = new_log_segment.end_version;
         if new_end_version < existing_snapshot_version {
             // we should never see a new log segment with a version < the existing snapshot
             // version, that would mean a commit was incorrectly deleted from the log
-            return Err(KernelError::invalid_log_segment(format!(
-                "Unexpected state: the newest version in the log {new_end_version} is \
+            return Err(crate::Error::Kernel(KernelError::invalid_log_segment(
+                format!(
+                    "Unexpected state: the newest version in the log {new_end_version} is \
                  older than the existing snapshot version {existing_snapshot_version}"
+                ),
             )));
         }
         if let Some(new_checkpoint_version) = new_log_segment.checkpoint_version {
@@ -488,7 +506,7 @@ impl Snapshot {
                 existing_log_segment.last_checkpoint_metadata.clone(),
             )
         };
-        let combined_log_segment = LogSegment::try_new(
+        let combined_log_segment = LogSegment::try_new_for_snapshot(
             LogSegmentFiles {
                 ascending_commit_files,
                 ascending_compaction_files,
@@ -506,6 +524,7 @@ impl Snapshot {
             log_root,
             requested_version,
             new_checkpoint_hint,
+            existing_log_segment.checkpoint_version,
         )?;
 
         Ok(NewSegment::Combined(combined_log_segment))
@@ -915,7 +934,7 @@ mod tests {
         );
         assert!(matches!(
             older_version,
-            Err(KernelError::Generic(msg)) if msg.contains("older than snapshot hint version")
+            Err(crate::Error::Kernel(KernelError::Generic(msg))) if msg.contains("older than snapshot hint version")
         ));
 
         Ok(())

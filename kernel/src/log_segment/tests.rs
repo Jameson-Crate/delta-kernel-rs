@@ -1,7 +1,9 @@
+use std::error::Error as _;
 use std::sync::{Arc, LazyLock};
 
 use itertools::Itertools;
 use rstest::rstest;
+use test_utils::table_builder::{LogState, TestTableBuilder};
 use test_utils::{
     compacted_log_path_for_versions, delta_path_for_version, staged_commit_path_for_version,
 };
@@ -5683,5 +5685,128 @@ fn snapshot_with_amt_last_checkpoint_hint_skips_earlier_commits() -> delta_kerne
         .latest_checkpoint_action(&engine)?
         .expect("checkpoint present");
     assert_eq!(checkpoint.path(), "metadata/root-v2.parquet");
+    Ok(())
+}
+
+#[rstest]
+#[case::checkpoint_gap(vec![4, 5], None, 5)]
+#[case::missing_target(vec![3], Some(5), 5)]
+#[tokio::test]
+async fn snapshot_missing_history_reports_checkpoint_and_target(
+    #[case] commits: Vec<Version>,
+    #[case] requested: Option<Version>,
+    #[case] target: Version,
+) -> crate::Result<()> {
+    let paths: Vec<_> = std::iter::once(delta_path_for_version(2, "checkpoint.parquet"))
+        .chain(
+            commits
+                .into_iter()
+                .map(|v| delta_path_for_version(v, "json")),
+        )
+        .collect();
+    let (storage, log_root) = build_log_with_paths_and_checkpoint(&paths, None).await;
+    let crate::Error::Delta(error) = LogSegment::for_snapshot_impl(
+        storage.as_ref(),
+        log_root.clone(),
+        vec![],
+        None,
+        requested,
+        None,
+    )
+    .unwrap_err() else {
+        panic!("expected missing snapshot history");
+    };
+    assert_eq!(
+        error.condition(),
+        crate::DeltaErrorCondition::DeltaLogFileNotFound
+    );
+    assert_eq!(error.sql_state(), Some("42K03"));
+    let parameters: Vec<_> = error
+        .parameters()
+        .iter()
+        .map(|p| (p.name(), p.value()))
+        .collect();
+    let target = target.to_string();
+    assert_eq!(
+        parameters,
+        vec![
+            ("version", target.as_str()),
+            ("checkpointVersion", "2"),
+            ("logPath", log_root.as_str())
+        ]
+    );
+    assert!(matches!(
+        error.source().unwrap().downcast_ref::<KernelError>(),
+        Some(KernelError::MissingVersion(_))
+    ));
+    Ok(())
+}
+
+#[cfg(feature = "declarative-plans")]
+#[rstest]
+#[case::missing_commit("00000000000000000001.json", true)]
+#[case::missing_checkpoint("00000000000000000000.checkpoint.parquet", false)]
+fn snapshot_missing_replay_file_preserves_its_classification(
+    #[case] missing_file: &str,
+    #[case] missing_commit: bool,
+    #[values(false, true)] use_plan: bool,
+) -> crate::Result<()> {
+    let table = TestTableBuilder::new()
+        .with_log_state(LogState::with_latest_version(2).with_checkpoint_at([0]))
+        .build()
+        .unwrap();
+    let engine = DelegatingEngine::new(Arc::new(SyncEngine::new_with_store(table.store().clone())));
+    let engine = if use_plan {
+        engine
+    } else {
+        engine.without_plan_executor()
+    };
+    let root = Url::parse(table.table_root()).map_err(KernelError::from)?;
+    let log_root = root.join("_delta_log/").map_err(KernelError::from)?;
+    let segment = LogSegment::for_snapshot_impl(
+        engine.storage_handler().as_ref(),
+        log_root.clone(),
+        vec![],
+        None,
+        None,
+        None,
+    )?;
+    let path = Path::from_url_path(
+        log_root
+            .join(missing_file)
+            .map_err(KernelError::from)?
+            .path(),
+    )
+    .map_err(KernelError::from)?;
+    futures::executor::block_on(table.store().delete(&path)).map_err(KernelError::from)?;
+    let error = segment
+        .read_protocol_metadata_opt(&engine, None)
+        .err()
+        .expect("expected missing replay file");
+    if !missing_commit {
+        assert!(
+            matches!(error, crate::Error::Kernel(error) if matches!(error.without_backtrace(), KernelError::FileNotFound(_)))
+        );
+        return Ok(());
+    }
+    let crate::Error::Delta(error) = error else {
+        panic!("expected missing snapshot commit: {error:?}");
+    };
+    assert_eq!(
+        error.condition(),
+        crate::DeltaErrorCondition::DeltaLogFileNotFound
+    );
+    assert_eq!(error.parameters()[0].value(), "2");
+    assert_eq!(error.parameters()[1].value(), "0");
+    assert_eq!(error.parameters()[2].value(), log_root.as_str());
+    assert!(matches!(
+        error
+            .source()
+            .unwrap()
+            .downcast_ref::<KernelError>()
+            .unwrap()
+            .without_backtrace(),
+        KernelError::FileNotFound(_)
+    ));
     Ok(())
 }
